@@ -85,6 +85,40 @@
             });
         });
 
+        // Test connection button
+        $('#test-connection').on('click', function() {
+            var $button = $(this);
+            var $result = $('#test-result');
+
+            $button.prop('disabled', true);
+            $result.removeClass('success error').html('<span class="errorvault-spinner"></span> Testing connection...');
+
+            $.ajax({
+                url: errorvaultAdmin.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'errorvault_test_connection',
+                    nonce: errorvaultAdmin.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        $result.removeClass('error').addClass('success')
+                            .text('✓ Connection successful!');
+                    } else {
+                        $result.removeClass('success').addClass('error')
+                            .text('✗ ' + (response.data && response.data.message ? response.data.message : 'Connection failed'));
+                    }
+                },
+                error: function() {
+                    $result.removeClass('success').addClass('error')
+                        .text('✗ Connection failed');
+                },
+                complete: function() {
+                    $button.prop('disabled', false);
+                }
+            });
+        });
+
         // Send test health report button
         $('#send-test-health').on('click', function() {
             var $button = $(this);
@@ -115,6 +149,38 @@
                 },
                 complete: function() {
                     $button.prop('disabled', false);
+                }
+            });
+        });
+
+        // Clear failure log button
+        $('#clear-failure-log').on('click', function() {
+            var $button = $(this);
+
+            if (!confirm('Are you sure you want to clear the connection failure log?')) {
+                return;
+            }
+
+            $button.prop('disabled', true).text('Clearing...');
+
+            $.ajax({
+                url: errorvaultAdmin.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'errorvault_clear_failures',
+                    nonce: errorvaultAdmin.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        location.reload();
+                    } else {
+                        alert('Failed to clear failure log');
+                        $button.prop('disabled', false).text('Clear Failure Log');
+                    }
+                },
+                error: function() {
+                    alert('Failed to clear failure log');
+                    $button.prop('disabled', false).text('Clear Failure Log');
                 }
             });
         });

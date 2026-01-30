@@ -215,6 +215,46 @@ class ErrorVault_API {
     }
 
     /**
+     * Send lightweight ping to update last_seen_at
+     */
+    public function send_ping() {
+        $endpoint = str_replace('/errors', '/ping', rtrim($this->get_endpoint(), '/'));
+        $token = $this->get_token();
+
+        if (empty($endpoint) || empty($token)) {
+            return false;
+        }
+
+        $response = wp_remote_post($endpoint, array(
+            'timeout' => 5,
+            'blocking' => true, // Blocking to detect failures
+            'headers' => array(
+                'Content-Type' => 'application/json',
+                'X-API-Token' => $token,
+                'User-Agent' => 'ErrorVault-WordPress/' . ERRORVAULT_VERSION,
+            ),
+            'body' => wp_json_encode(array(
+                'timestamp' => time(),
+                'site_url' => get_site_url(),
+            )),
+        ));
+
+        if (is_wp_error($response)) {
+            $this->log_connection_failure('ping', $response->get_error_message());
+            return false;
+        }
+
+        $status_code = wp_remote_retrieve_response_code($response);
+        if ($status_code >= 200 && $status_code < 300) {
+            $this->clear_connection_failures();
+            return true;
+        }
+
+        $this->log_connection_failure('ping', 'HTTP ' . $status_code);
+        return false;
+    }
+
+    /**
      * Send periodic health report to API
      *
      * @param array $health_data The health data to send
@@ -261,5 +301,88 @@ class ErrorVault_API {
         }
 
         return true;
+    }
+
+    /**
+     * Log connection failure for diagnostics
+     */
+    private function log_connection_failure($type, $message) {
+        $failures = get_option('errorvault_connection_failures', array());
+        
+        $failures[] = array(
+            'type' => $type,
+            'message' => $message,
+            'timestamp' => current_time('mysql'),
+            'time' => time(),
+        );
+
+        // Keep only last 20 failures
+        $failures = array_slice($failures, -20);
+        update_option('errorvault_connection_failures', $failures);
+
+        // Log to PHP error log
+        error_log('[ErrorVault] Connection failure (' . $type . '): ' . $message);
+
+        // Track consecutive failures
+        $consecutive = (int) get_transient('errorvault_consecutive_failures');
+        set_transient('errorvault_consecutive_failures', $consecutive + 1, 3600);
+
+        // Send admin notification after 5 consecutive failures
+        if ($consecutive >= 5) {
+            $this->notify_admin_of_failures();
+        }
+    }
+
+    /**
+     * Clear connection failure tracking on success
+     */
+    private function clear_connection_failures() {
+        delete_transient('errorvault_consecutive_failures');
+    }
+
+    /**
+     * Get recent connection failures for diagnostics
+     */
+    public function get_connection_failures() {
+        return get_option('errorvault_connection_failures', array());
+    }
+
+    /**
+     * Clear connection failure log
+     */
+    public function clear_failure_log() {
+        delete_option('errorvault_connection_failures');
+        delete_transient('errorvault_consecutive_failures');
+    }
+
+    /**
+     * Notify admin of repeated connection failures
+     */
+    private function notify_admin_of_failures() {
+        // Only send once per day
+        if (get_transient('errorvault_failure_notification_sent')) {
+            return;
+        }
+
+        $admin_email = get_option('admin_email');
+        $site_name = get_bloginfo('name');
+        $failures = $this->get_connection_failures();
+        $recent = array_slice($failures, -5);
+
+        $message = "ErrorVault plugin on {$site_name} has experienced repeated connection failures.\n\n";
+        $message .= "Recent failures:\n";
+        foreach ($recent as $failure) {
+            $message .= "- {$failure['timestamp']}: {$failure['type']} - {$failure['message']}\n";
+        }
+        $message .= "\nPlease check your ErrorVault settings and API endpoint.\n";
+        $message .= "Settings: " . admin_url('options-general.php?page=errorvault');
+
+        wp_mail(
+            $admin_email,
+            '[ErrorVault] Connection Issues Detected',
+            $message
+        );
+
+        set_transient('errorvault_failure_notification_sent', true, DAY_IN_SECONDS);
     }
 }

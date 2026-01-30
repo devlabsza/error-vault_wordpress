@@ -41,6 +41,7 @@ class ErrorVault_Admin {
         // AJAX handlers
         add_action('wp_ajax_errorvault_verify_token', array($this, 'ajax_verify_token'));
         add_action('wp_ajax_errorvault_test_error', array($this, 'ajax_test_error'));
+        add_action('wp_ajax_errorvault_clear_failures', array($this, 'ajax_clear_failures'));
     }
 
     /**
@@ -360,10 +361,94 @@ class ErrorVault_Admin {
                     </table>
                 </div>
 
+                <?php
+                // Get diagnostics if health monitoring is enabled
+                if (!empty($settings['health_monitoring_enabled'])) {
+                    $health_monitor = new ErrorVault_Health_Monitor();
+                    $diagnostics = $health_monitor->get_diagnostics();
+                    $api = new ErrorVault_API();
+                    $failures = $api->get_connection_failures();
+                    ?>
+                    <div class="errorvault-card">
+                        <h2><?php _e('Connection Diagnostics', 'errorvault'); ?></h2>
+                        <table class="widefat" style="margin-top: 10px;">
+                            <tbody>
+                                <tr>
+                                    <td style="width: 30%; font-weight: 600;"><?php _e('Status', 'errorvault'); ?></td>
+                                    <td>
+                                        <?php if ($diagnostics['enabled']): ?>
+                                            <span style="color: #46b450;">● <?php _e('Active', 'errorvault'); ?></span>
+                                        <?php else: ?>
+                                            <span style="color: #dc3232;">● <?php _e('Inactive', 'errorvault'); ?></span>
+                                        <?php endif; ?>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600;"><?php _e('Health Check Cron', 'errorvault'); ?></td>
+                                    <td><?php echo esc_html($diagnostics['health_cron_scheduled']); ?></td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600;"><?php _e('Heartbeat Cron', 'errorvault'); ?></td>
+                                    <td><?php echo esc_html($diagnostics['heartbeat_cron_scheduled']); ?></td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600;"><?php _e('Consecutive Failures', 'errorvault'); ?></td>
+                                    <td>
+                                        <?php 
+                                        $consecutive = $diagnostics['consecutive_failures'];
+                                        if ($consecutive > 0) {
+                                            echo '<span style="color: #dc3232; font-weight: 600;">' . esc_html($consecutive) . '</span>';
+                                        } else {
+                                            echo '<span style="color: #46b450;">0</span>';
+                                        }
+                                        ?>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600;"><?php _e('Total Failures Logged', 'errorvault'); ?></td>
+                                    <td><?php echo esc_html($diagnostics['total_failures']); ?></td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <?php if (!empty($diagnostics['recent_failures'])): ?>
+                        <h3 style="margin-top: 20px;"><?php _e('Recent Connection Failures', 'errorvault'); ?></h3>
+                        <table class="widefat" style="margin-top: 10px;">
+                            <thead>
+                                <tr>
+                                    <th><?php _e('Time', 'errorvault'); ?></th>
+                                    <th><?php _e('Type', 'errorvault'); ?></th>
+                                    <th><?php _e('Error', 'errorvault'); ?></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($diagnostics['recent_failures'] as $failure): ?>
+                                <tr>
+                                    <td><?php echo esc_html($failure['timestamp']); ?></td>
+                                    <td><code><?php echo esc_html($failure['type']); ?></code></td>
+                                    <td><?php echo esc_html($failure['message']); ?></td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                        <p style="margin-top: 10px;">
+                            <button type="button" id="clear-failure-log" class="button button-secondary">
+                                <?php _e('Clear Failure Log', 'errorvault'); ?>
+                            </button>
+                        </p>
+                        <?php endif; ?>
+                    </div>
+                    <?php
+                }
+                ?>
+
                 <div class="errorvault-card">
                     <h2><?php _e('Test Connection', 'errorvault'); ?></h2>
                     <p><?php _e('Send a test error or health report to verify your connection is working.', 'errorvault'); ?></p>
                     <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <button type="button" id="test-connection" class="button button-primary">
+                            <?php _e('Test Connection (Ping)', 'errorvault'); ?>
+                        </button>
                         <button type="button" id="send-test-error" class="button button-secondary">
                             <?php _e('Send Test Error', 'errorvault'); ?>
                         </button>
@@ -482,5 +567,20 @@ class ErrorVault_Admin {
         } else {
             wp_send_json_error('Failed to send test error');
         }
+    }
+
+    /**
+     * AJAX: Clear connection failure log
+     */
+    public function ajax_clear_failures() {
+        check_ajax_referer('errorvault_admin', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        $this->api->clear_failure_log();
+
+        wp_send_json_success('Failure log cleared successfully');
     }
 }

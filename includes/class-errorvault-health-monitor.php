@@ -36,14 +36,12 @@ class ErrorVault_Health_Monitor {
         $this->settings = get_option('errorvault_settings', array());
         $this->api = new ErrorVault_API();
 
-        // Add custom cron interval (must be registered early, before scheduling)
-        add_filter('cron_schedules', array($this, 'add_cron_interval'));
-
         // Register cron action handler (even if disabled, so scheduled events can be processed)
         add_action('errorvault_health_check_cron', array($this, 'send_periodic_health_report'));
 
-        // AJAX handler for test health report (always register)
+        // AJAX handlers (always register)
         add_action('wp_ajax_errorvault_test_health', array($this, 'ajax_test_health_report'));
+        add_action('wp_ajax_errorvault_test_connection', array($this, 'ajax_test_connection'));
 
         // Only run monitoring if health monitoring is enabled
         if (!$this->is_enabled()) {
@@ -76,16 +74,6 @@ class ErrorVault_Health_Monitor {
             && !empty($this->settings['api_token']);
     }
 
-    /**
-     * Add custom cron interval
-     */
-    public function add_cron_interval($schedules) {
-        $schedules['five_minutes'] = array(
-            'interval' => 300,
-            'display' => __('Every 5 Minutes', 'errorvault'),
-        );
-        return $schedules;
-    }
 
     /**
      * Track incoming request
@@ -648,6 +636,42 @@ class ErrorVault_Health_Monitor {
     }
 
     /**
+     * AJAX handler for connection test
+     */
+    public function ajax_test_connection() {
+        check_ajax_referer('errorvault_admin', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        // Refresh settings
+        $this->settings = get_option('errorvault_settings', array());
+
+        if (empty($this->settings['api_endpoint']) || empty($this->settings['api_token'])) {
+            wp_send_json_error('API endpoint and token are required.');
+        }
+
+        // Test ping
+        $ping_result = $this->api->send_ping();
+
+        if ($ping_result) {
+            wp_send_json_success(array(
+                'message' => 'Connection successful! Your site is communicating with ErrorVault.',
+                'timestamp' => current_time('mysql'),
+            ));
+        } else {
+            $failures = $this->api->get_connection_failures();
+            $last_failure = !empty($failures) ? end($failures) : null;
+            
+            wp_send_json_error(array(
+                'message' => 'Connection failed. Please check your API endpoint and token.',
+                'last_error' => $last_failure ? $last_failure['message'] : 'Unknown error',
+            ));
+        }
+    }
+
+    /**
      * AJAX handler for test health report
      */
     public function ajax_test_health_report() {
@@ -683,6 +707,25 @@ class ErrorVault_Health_Monitor {
         } else {
             wp_send_json_error('Failed to send health report. Check your API endpoint and token. Make sure the portal has the health tables migrated.');
         }
+    }
+
+    /**
+     * Get diagnostics information
+     */
+    public function get_diagnostics() {
+        $health_cron = wp_next_scheduled('errorvault_health_check_cron');
+        $heartbeat_cron = wp_next_scheduled('errorvault_heartbeat');
+        $failures = $this->api->get_connection_failures();
+        $consecutive = get_transient('errorvault_consecutive_failures');
+
+        return array(
+            'enabled' => $this->is_enabled(),
+            'health_cron_scheduled' => $health_cron ? date('Y-m-d H:i:s', $health_cron) : 'Not scheduled',
+            'heartbeat_cron_scheduled' => $heartbeat_cron ? date('Y-m-d H:i:s', $heartbeat_cron) : 'Not scheduled',
+            'consecutive_failures' => $consecutive ?: 0,
+            'total_failures' => count($failures),
+            'recent_failures' => array_slice($failures, -5),
+        );
     }
 
     /**
