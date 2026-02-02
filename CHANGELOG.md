@@ -2,6 +2,26 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.3.2] - 2026-02-02
+
+### Added
+- **GitHub Actions Workflow**: Automatic release packaging with properly named folders
+- Release asset preference in updater (uses `errorvault-wordpress.zip` when available)
+- Fallback folder renaming for GitHub zipball downloads
+
+### Fixed
+- API endpoint placeholder now matches actual portal URL (`error-vault.com`)
+- CSS layout issue with settings notification overlapping version badge
+- Header flex layout with proper wrapping and spacing
+- WordPress settings errors now display correctly below header
+
+### Changed
+- Updated installation documentation with clear manual setup instructions
+- Improved GITHUB_SETUP.md with GitHub Actions workflow explanation
+- Enhanced readme.txt with both automatic and manual installation steps
+
+---
+
 ## [1.3.1] - 2026-01-30
 
 ### Added

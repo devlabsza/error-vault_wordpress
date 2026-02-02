@@ -4,7 +4,7 @@ Tags: error logging, debugging, error monitoring, php errors, developer tools, s
 Requires at least: 5.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.3.1
+Stable tag: 1.3.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -34,11 +34,25 @@ ErrorVault is a centralized error monitoring solution for WordPress. Instead of 
 
 == Installation ==
 
-1. Upload the `errorvault` folder to the `/wp-content/plugins/` directory
-2. Activate the plugin through the 'Plugins' menu in WordPress
-3. Go to Settings > ErrorVault to configure your API endpoint and token
-4. Click "Verify Connection" to test the connection
-5. Enable logging and save settings
+**From WordPress Admin (Recommended):**
+1. Go to Plugins > Add New > Upload Plugin
+2. Choose the plugin zip file and click "Install Now"
+3. Activate the plugin
+4. Go to Settings > ErrorVault to configure your API endpoint and token
+5. Click "Verify Connection" to test the connection
+6. Enable logging and save settings
+
+**Manual Installation:**
+1. Download the plugin zip from GitHub releases
+2. Extract the zip file
+3. **Important:** Rename the extracted folder to `errorvault-wordpress` (GitHub names it as `error-vault_wordpress-X.X.X`)
+4. Upload the `errorvault-wordpress` folder to `/wp-content/plugins/`
+5. Activate the plugin through the 'Plugins' menu in WordPress
+6. Go to Settings > ErrorVault to configure your API endpoint and token
+7. Click "Verify Connection" to test the connection
+8. Enable logging and save settings
+
+**Note:** The folder must be named `errorvault-wordpress` for updates to work correctly.
 
 == Frequently Asked Questions ==
 
@@ -59,6 +73,14 @@ Yes! In the settings, you can add exclude patterns. Any error message containing
 Log in to your ErrorVault portal, add your site, and the API token will be displayed in the site settings.
 
 == Changelog ==
+
+= 1.3.2 =
+* Fixed API endpoint placeholder to match actual portal URL (error-vault.com)
+* Fixed CSS layout issue with settings notification overlapping version badge
+* Added GitHub Actions workflow for automatic release packaging
+* Improved updater to prefer properly named release assets
+* Added fallback folder renaming for GitHub zipball downloads
+* Updated installation documentation with clear manual setup instructions
 
 = 1.3.1 =
 * Added automatic update system from GitHub releases

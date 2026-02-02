@@ -148,12 +148,14 @@ class ErrorVault_Admin {
         $settings = get_option('errorvault_settings', array());
         ?>
         <div class="wrap errorvault-settings">
-            <div class="errorvault-header" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
-                <h1 style="margin: 0;"><?php echo esc_html(get_admin_page_title()); ?></h1>
-                <div class="errorvault-version" style="background: #635bff; color: #fff; padding: 6px 14px; border-radius: 4px; font-size: 13px; font-weight: 500;">
+            <div class="errorvault-header" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
+                <h1 style="margin: 0; flex: 1 1 auto;"><?php echo esc_html(get_admin_page_title()); ?></h1>
+                <div class="errorvault-version" style="background: #635bff; color: #fff; padding: 6px 14px; border-radius: 4px; font-size: 13px; font-weight: 500; flex-shrink: 0;">
                     Version <?php echo esc_html(ERRORVAULT_VERSION); ?>
                 </div>
             </div>
+
+            <?php settings_errors(); ?>
 
             <form method="post" action="options.php">
                 <?php settings_fields('errorvault_settings'); ?>
@@ -169,7 +171,7 @@ class ErrorVault_Admin {
                             <td>
                                 <input type="url" name="errorvault_settings[api_endpoint]" id="api_endpoint"
                                     value="<?php echo esc_attr($settings['api_endpoint'] ?? ''); ?>"
-                                    class="regular-text" placeholder="https://your-errorvault-portal.com/api/v1/errors">
+                                    class="regular-text" placeholder="https://error-vault.com/api/v1/errors">
                                 <p class="description"><?php _e('The API endpoint URL from your ErrorVault portal.', 'errorvault'); ?></p>
                             </td>
                         </tr>

@@ -3,7 +3,7 @@
  * Plugin Name: ErrorVault
  * Plugin URI: https://errorvault.com
  * Description: Send PHP errors to your ErrorVault dashboard for centralized error monitoring.
- * Version: 1.3.1
+ * Version: 1.3.2
  * Author: ErrorVault
  * Author URI: https://errorvault.com
  * License: GPL v2 or later
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('ERRORVAULT_VERSION', '1.3.1');
+define('ERRORVAULT_VERSION', '1.3.2');
 define('ERRORVAULT_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ERRORVAULT_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ERRORVAULT_PLUGIN_BASENAME', plugin_basename(__FILE__));

@@ -51,7 +51,29 @@ Download the plugin and install via WordPress admin or upload to `/wp-content/pl
 
 3. **Publish the release**
 
-### 3. How Updates Work
+### 3. Important: GitHub Folder Naming
+
+**Issue**: When GitHub creates a release zipball, it names the extracted folder as `repo-name-tag` (e.g., `error-vault_wordpress-1.3.1`). This causes WordPress to see each version as a different plugin.
+
+**Recommended Solution: GitHub Actions** (Automatic)
+
+The repository includes a GitHub Action (`.github/workflows/release.yml`) that automatically:
+1. Creates a properly named `errorvault-wordpress` folder
+2. Packages it as `errorvault-wordpress.zip`
+3. Attaches it to the release as an asset
+
+When you create a release, the Action runs automatically and the updater will use this properly named zip file. **No folder renaming needed!**
+
+**Fallback Solution**: If the GitHub Action hasn't run or the asset is missing, the updater will:
+1. Fall back to using GitHub's zipball
+2. Automatically detect and rename the folder during installation
+3. Ensure the plugin updates correctly
+
+**For Manual Installation**: If you download a release zip manually:
+- **Preferred**: Download the `errorvault-wordpress.zip` asset from the release (if available)
+- **Alternative**: Download the source code zip and rename the extracted folder from `error-vault_wordpress-1.3.1` to `errorvault-wordpress` before uploading
+
+### 4. How Updates Work
 
 Once configured, the plugin will:
 
@@ -59,6 +81,7 @@ Once configured, the plugin will:
 2. **Compare versions** using semantic versioning
 3. **Show update notification** in WordPress admin when available
 4. **Allow one-click update** from the Plugins page
+5. **Automatically handle folder renaming** during update process
 
 ### 4. Testing the Update System
 

@@ -1,0 +1,33 @@
+name: Create Release Package
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Create properly named plugin folder
+        run: |
+          mkdir -p /tmp/errorvault-wordpress
+          rsync -av --exclude='.git' --exclude='.github' --exclude='node_modules' ./ /tmp/errorvault-wordpress/
+      
+      - name: Create zip file
+        run: |
+          cd /tmp
+          zip -r errorvault-wordpress.zip errorvault-wordpress
+      
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: /tmp/errorvault-wordpress.zip
+          asset_name: errorvault-wordpress.zip
+          asset_content_type: application/zip

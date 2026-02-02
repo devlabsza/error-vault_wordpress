@@ -67,11 +67,19 @@ class ErrorVault_Updater {
         $release = $this->get_latest_release();
 
         if ($release && version_compare($this->version, $release->tag_name, '<')) {
+            // Try to find properly named release asset first
+            $package_url = $this->get_release_asset_url($release);
+            
+            // Fallback to zipball if no asset found (will require folder renaming)
+            if (!$package_url) {
+                $package_url = $release->zipball_url;
+            }
+            
             $plugin_data = array(
                 'slug' => dirname($this->plugin_slug),
                 'new_version' => $release->tag_name,
                 'url' => "https://github.com/{$this->github_user}/{$this->github_repo}",
-                'package' => $release->zipball_url,
+                'package' => $package_url,
                 'tested' => '6.4',
                 'requires_php' => '7.4',
             );
@@ -122,19 +130,43 @@ class ErrorVault_Updater {
 
     /**
      * After plugin installation
+     * Handles GitHub's folder naming (repo-tag format) and renames to correct plugin folder
      */
     public function after_install($response, $hook_extra, $result) {
         global $wp_filesystem;
 
-        $install_directory = plugin_dir_path($this->plugin_basename);
-        $wp_filesystem->move($result['destination'], $install_directory);
-        $result['destination'] = $install_directory;
-
-        if ($this->plugin_slug) {
-            activate_plugin($this->plugin_slug);
+        // GitHub names the folder as "repo-name-tag" (e.g., error-vault_wordpress-1.3.1)
+        // We need to rename it to just "errorvault-wordpress"
+        $proper_destination = WP_PLUGIN_DIR . '/errorvault-wordpress';
+        
+        // Remove old plugin folder if it exists
+        if ($wp_filesystem->exists($proper_destination)) {
+            $wp_filesystem->delete($proper_destination, true);
         }
 
+        // Move the extracted folder to the correct location
+        $wp_filesystem->move($result['destination'], $proper_destination);
+        $result['destination'] = $proper_destination;
+
         return $result;
+    }
+
+    /**
+     * Get release asset URL (properly named zip from GitHub Actions)
+     */
+    private function get_release_asset_url($release) {
+        if (!isset($release->assets) || empty($release->assets)) {
+            return false;
+        }
+
+        // Look for errorvault-wordpress.zip asset
+        foreach ($release->assets as $asset) {
+            if ($asset->name === 'errorvault-wordpress.zip') {
+                return $asset->browser_download_url;
+            }
+        }
+
+        return false;
     }
 
     /**
