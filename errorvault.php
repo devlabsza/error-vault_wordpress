@@ -1,11 +1,11 @@
 <?php
 /**
  * Plugin Name: ErrorVault
- * Plugin URI: https://errorvault.com
+ * Plugin URI: https://error-vault.com
  * Description: Send PHP errors to your ErrorVault dashboard for centralized error monitoring.
  * Version: 1.3.2
  * Author: ErrorVault
- * Author URI: https://errorvault.com
+ * Author URI: https://error-vault.com
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: errorvault
