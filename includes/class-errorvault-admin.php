@@ -42,6 +42,9 @@ class ErrorVault_Admin {
         add_action('wp_ajax_errorvault_verify_token', array($this, 'ajax_verify_token'));
         add_action('wp_ajax_errorvault_test_error', array($this, 'ajax_test_error'));
         add_action('wp_ajax_errorvault_clear_failures', array($this, 'ajax_clear_failures'));
+        add_action('wp_ajax_errorvault_trigger_backup_poll', array($this, 'ajax_trigger_backup_poll'));
+        add_action('wp_ajax_errorvault_get_backup_logs', array($this, 'ajax_get_backup_logs'));
+        add_action('wp_ajax_errorvault_clear_backup_logs', array($this, 'ajax_clear_backup_logs'));
     }
 
     /**
@@ -133,6 +136,12 @@ class ErrorVault_Admin {
                 'testingHealth' => __('Sending health report...', 'errorvault'),
                 'testHealthSuccess' => __('Health report sent! Check your ErrorVault Server Health dashboard.', 'errorvault'),
                 'testHealthFailed' => __('Failed to send health report', 'errorvault'),
+                'triggeringBackup' => __('Triggering backup poll...', 'errorvault'),
+                'backupTriggered' => __('Backup poll triggered! Check logs below.', 'errorvault'),
+                'backupFailed' => __('Failed to trigger backup poll', 'errorvault'),
+                'loadingLogs' => __('Loading logs...', 'errorvault'),
+                'clearingLogs' => __('Clearing logs...', 'errorvault'),
+                'logsCleared' => __('Logs cleared successfully', 'errorvault'),
             ),
         ));
     }
@@ -445,6 +454,93 @@ class ErrorVault_Admin {
                 ?>
 
                 <div class="errorvault-card">
+                    <h2><?php _e('Backup Status', 'errorvault'); ?></h2>
+                    <p class="description" style="margin-bottom: 15px;">
+                        <?php _e('Monitor automated backup operations. Backups are triggered from your ErrorVault dashboard and run automatically.', 'errorvault'); ?>
+                    </p>
+
+                    <?php
+                    $backup_status = EV_Backup_Helpers::get_backup_status();
+                    $requirements = EV_Backup_Helpers::check_requirements();
+                    ?>
+
+                    <table class="widefat" style="margin-bottom: 15px;">
+                        <tbody>
+                            <tr>
+                                <td style="font-weight: 600; width: 200px;"><?php _e('Cron Scheduled', 'errorvault'); ?></td>
+                                <td>
+                                    <?php if ($backup_status['cron_scheduled']): ?>
+                                        <span style="color: #46b450;">✓ <?php _e('Active', 'errorvault'); ?></span>
+                                    <?php else: ?>
+                                        <span style="color: #dc3232;">✗ <?php _e('Not Scheduled', 'errorvault'); ?></span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="font-weight: 600;"><?php _e('Next Poll', 'errorvault'); ?></td>
+                                <td>
+                                    <?php if ($backup_status['next_poll_time']): ?>
+                                        <?php echo esc_html(date('Y-m-d H:i:s', $backup_status['next_poll_time'])); ?>
+                                        <span style="color: #666;">(in <?php echo esc_html($backup_status['next_poll_human']); ?>)</span>
+                                    <?php else: ?>
+                                        <span style="color: #999;">—</span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="font-weight: 600;"><?php _e('Backup In Progress', 'errorvault'); ?></td>
+                                <td>
+                                    <?php if ($backup_status['backup_in_progress']): ?>
+                                        <span style="color: #f0b849;">⏳ <?php _e('Yes', 'errorvault'); ?></span>
+                                    <?php else: ?>
+                                        <span style="color: #666;"><?php _e('No', 'errorvault'); ?></span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="font-weight: 600;"><?php _e('Requirements', 'errorvault'); ?></td>
+                                <td>
+                                    <?php if ($requirements['all_met']): ?>
+                                        <span style="color: #46b450;">✓ <?php _e('All requirements met', 'errorvault'); ?></span>
+                                    <?php else: ?>
+                                        <span style="color: #dc3232;">✗ <?php _e('Missing requirements', 'errorvault'); ?></span>
+                                        <?php if (!$requirements['zip_available']): ?>
+                                            <br><span style="color: #dc3232; font-size: 12px;">• ZipArchive extension not available</span>
+                                        <?php endif; ?>
+                                        <?php if (!$requirements['uploads_writable']): ?>
+                                            <br><span style="color: #dc3232; font-size: 12px;">• Uploads directory not writable</span>
+                                        <?php endif; ?>
+                                        <?php if (!$requirements['api_configured']): ?>
+                                            <br><span style="color: #dc3232; font-size: 12px;">• API not configured</span>
+                                        <?php endif; ?>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 15px;">
+                        <button type="button" id="trigger-backup-poll" class="button button-secondary">
+                            <?php _e('Trigger Backup Poll Now', 'errorvault'); ?>
+                        </button>
+                        <button type="button" id="view-backup-logs" class="button button-secondary">
+                            <?php _e('View Recent Logs', 'errorvault'); ?>
+                        </button>
+                        <button type="button" id="clear-backup-logs" class="button button-secondary">
+                            <?php _e('Clear Logs', 'errorvault'); ?>
+                        </button>
+                        <span id="backup-result"></span>
+                    </div>
+
+                    <div id="backup-logs-container" style="display: none; margin-top: 15px;">
+                        <h3><?php _e('Recent Backup Logs', 'errorvault'); ?></h3>
+                        <div id="backup-logs-content" style="background: #f5f5f5; padding: 15px; border-radius: 4px; max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap;">
+                            <?php _e('Loading...', 'errorvault'); ?>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="errorvault-card">
                     <h2><?php _e('Test Connection', 'errorvault'); ?></h2>
                     <p><?php _e('Send a test error or health report to verify your connection is working.', 'errorvault'); ?></p>
                     <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
@@ -584,5 +680,62 @@ class ErrorVault_Admin {
         $this->api->clear_failure_log();
 
         wp_send_json_success('Failure log cleared successfully');
+    }
+
+    /**
+     * AJAX: Trigger backup poll
+     */
+    public function ajax_trigger_backup_poll() {
+        check_ajax_referer('errorvault_admin', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        $result = EV_Backup_Helpers::trigger_manual_poll();
+
+        if ($result['success']) {
+            wp_send_json_success($result['message']);
+        } else {
+            wp_send_json_error($result['error']);
+        }
+    }
+
+    /**
+     * AJAX: Get backup logs
+     */
+    public function ajax_get_backup_logs() {
+        check_ajax_referer('errorvault_admin', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        $logs = EV_Backup_Helpers::get_recent_log_entries(100);
+
+        if (empty($logs)) {
+            wp_send_json_success(array(
+                'logs' => 'No backup logs found. Logs will appear here after the first backup operation.'
+            ));
+        } else {
+            wp_send_json_success(array(
+                'logs' => implode("\n", $logs)
+            ));
+        }
+    }
+
+    /**
+     * AJAX: Clear backup logs
+     */
+    public function ajax_clear_backup_logs() {
+        check_ajax_referer('errorvault_admin', 'nonce');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized');
+        }
+
+        EV_Backup_Helpers::clear_log();
+
+        wp_send_json_success('Backup logs cleared successfully');
     }
 }

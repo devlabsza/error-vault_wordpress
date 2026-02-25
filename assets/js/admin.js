@@ -185,6 +185,126 @@
             });
         });
 
+        // Trigger backup poll button
+        $('#trigger-backup-poll').on('click', function() {
+            var $button = $(this);
+            var $result = $('#backup-result');
+
+            $button.prop('disabled', true);
+            $result.removeClass('success error').html('<span class="errorvault-spinner"></span> ' + errorvaultAdmin.strings.triggeringBackup);
+
+            $.ajax({
+                url: errorvaultAdmin.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'errorvault_trigger_backup_poll',
+                    nonce: errorvaultAdmin.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        $result.removeClass('error').addClass('success')
+                            .text(errorvaultAdmin.strings.backupTriggered);
+                        // Auto-refresh logs after 2 seconds
+                        setTimeout(function() {
+                            $('#view-backup-logs').trigger('click');
+                        }, 2000);
+                    } else {
+                        $result.removeClass('success').addClass('error')
+                            .text(errorvaultAdmin.strings.backupFailed + ': ' + response.data);
+                    }
+                },
+                error: function() {
+                    $result.removeClass('success').addClass('error')
+                        .text(errorvaultAdmin.strings.backupFailed);
+                },
+                complete: function() {
+                    $button.prop('disabled', false);
+                }
+            });
+        });
+
+        // View backup logs button
+        $('#view-backup-logs').on('click', function() {
+            var $button = $(this);
+            var $container = $('#backup-logs-container');
+            var $content = $('#backup-logs-content');
+
+            if ($container.is(':visible')) {
+                $container.slideUp();
+                $button.text('View Recent Logs');
+                return;
+            }
+
+            $button.prop('disabled', true);
+            $content.html('<span class="errorvault-spinner"></span> ' + errorvaultAdmin.strings.loadingLogs);
+            $container.slideDown();
+
+            $.ajax({
+                url: errorvaultAdmin.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'errorvault_get_backup_logs',
+                    nonce: errorvaultAdmin.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        $content.text(response.data.logs);
+                        $button.text('Hide Logs');
+                    } else {
+                        $content.text('Failed to load logs: ' + response.data);
+                    }
+                },
+                error: function() {
+                    $content.text('Failed to load logs');
+                },
+                complete: function() {
+                    $button.prop('disabled', false);
+                }
+            });
+        });
+
+        // Clear backup logs button
+        $('#clear-backup-logs').on('click', function() {
+            var $button = $(this);
+            var $result = $('#backup-result');
+
+            if (!confirm('Are you sure you want to clear the backup logs?')) {
+                return;
+            }
+
+            $button.prop('disabled', true);
+            $result.removeClass('success error').html('<span class="errorvault-spinner"></span> ' + errorvaultAdmin.strings.clearingLogs);
+
+            $.ajax({
+                url: errorvaultAdmin.ajaxUrl,
+                type: 'POST',
+                data: {
+                    action: 'errorvault_clear_backup_logs',
+                    nonce: errorvaultAdmin.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        $result.removeClass('error').addClass('success')
+                            .text(errorvaultAdmin.strings.logsCleared);
+                        // Clear the logs display if visible
+                        if ($('#backup-logs-container').is(':visible')) {
+                            $('#backup-logs-content').text('No backup logs found. Logs will appear here after the first backup operation.');
+                        }
+                    } else {
+                        $result.removeClass('success').addClass('error')
+                            .text('Failed to clear logs: ' + response.data);
+                    }
+                },
+                error: function() {
+                    $result.removeClass('success').addClass('error')
+                        .text('Failed to clear logs');
+                },
+                complete: function() {
+                    $button.prop('disabled', false);
+                }
+            });
+        });
+
     });
 
 })(jQuery);

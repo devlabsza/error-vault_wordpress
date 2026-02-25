@@ -2,6 +2,31 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.4.1] - 2026-02-25
+
+### Added
+- **Backup Status UI** in admin settings page
+  - Real-time status display (cron scheduled, next poll time, backup in progress)
+  - System requirements check with detailed feedback
+  - Manual backup poll trigger button
+  - View recent backup logs (last 100 entries)
+  - Clear backup logs functionality
+- **AJAX Handlers** for backup operations
+  - Trigger manual backup poll
+  - Fetch recent backup logs
+  - Clear backup logs
+- **Enhanced Admin Interface**
+  - Auto-refresh logs after manual trigger
+  - Collapsible log viewer
+  - Visual status indicators (✓/✗/⏳)
+  - Inline error messages
+
+### Changed
+- Admin JavaScript updated with backup UI handlers
+- Improved user feedback for backup operations
+
+---
+
 ## [1.4.0] - 2026-02-25
 
 ### Added
