@@ -3,7 +3,7 @@
  * Plugin Name: ErrorVault
  * Plugin URI: https://error-vault.com
  * Description: Send PHP errors to your ErrorVault dashboard for centralized error monitoring.
- * Version: 1.3.2
+ * Version: 1.4.0
  * Author: ErrorVault
  * Author URI: https://error-vault.com
  * License: GPL v2 or later
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('ERRORVAULT_VERSION', '1.3.2');
+define('ERRORVAULT_VERSION', '1.4.0');
 define('ERRORVAULT_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ERRORVAULT_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ERRORVAULT_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -29,6 +29,10 @@ require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-error-handler.ph
 require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-api.php';
 require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-health-monitor.php';
 require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-updater.php';
+require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-ev-cron.php';
+require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-ev-backup-manager.php';
+require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-ev-db-exporter.php';
+require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-ev-backup-helpers.php';
 
 /**
  * Initialize the plugin
@@ -42,6 +46,9 @@ function errorvault_init() {
     
     // Initialize GitHub updater
     new ErrorVault_Updater(__FILE__);
+    
+    // Initialize backup cron
+    EV_Cron::init();
 }
 add_action('plugins_loaded', 'errorvault_init');
 
@@ -116,6 +123,9 @@ function errorvault_deactivate() {
     
     // Clean up heartbeat cron
     wp_clear_scheduled_hook('errorvault_heartbeat');
+    
+    // Clean up backup cron
+    EV_Cron::unschedule_backup_poll();
 }
 register_deactivation_hook(__FILE__, 'errorvault_deactivate');
 

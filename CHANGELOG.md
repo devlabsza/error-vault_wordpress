@@ -2,6 +2,49 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.4.0] - 2026-02-25
+
+### Added
+- **Automated Backup System**: Complete backup functionality with API integration
+  - Automatic polling for pending backups every 5 minutes
+  - Database export to SQL (pure PHP, no mysqldump dependency)
+  - ZIP archive creation with optional uploads folder inclusion
+  - SHA256 checksum generation for backup verification
+  - Multipart upload to ErrorVault API with retry logic
+  - Transient locking to prevent concurrent backup runs
+  - Comprehensive error handling and logging
+- **Backup Components**:
+  - `EV_Backup_Manager` - Main backup orchestration and API communication
+  - `EV_DB_Exporter` - Shared hosting compatible database export
+  - `EV_Cron` - Cron job management for backup polling
+  - `EV_Backup_Helpers` - Utility functions for status, logs, and diagnostics
+- **Backup Features**:
+  - Database-only backups
+  - Database + uploads backups
+  - 500MB file size limit validation
+  - Automatic cleanup of temporary files
+  - Detailed logging to file and error_log
+  - Manual trigger capability for testing
+  - Status checking and requirement validation
+  - Backup size estimation
+- **Documentation**:
+  - `BACKUP_IMPLEMENTATION.md` - Complete technical documentation
+  - `BACKUP_QUICK_START.md` - User-friendly quick reference guide
+
+### Changed
+- Backup cron automatically scheduled on plugin activation
+- Backup cron cleaned up on plugin deactivation
+- Enhanced plugin initialization with backup system integration
+
+### Technical Details
+- API Endpoints: `/api/v1/backups/pending` and `/api/v1/backups/{id}/upload`
+- Batched database export (100 rows per batch) for memory efficiency
+- Exponential backoff retry logic (2 retries max)
+- 300-second upload timeout for large files
+- Logs stored in `wp-content/uploads/errorvault-backups/backup.log`
+
+---
+
 ## [1.3.2] - 2026-02-02
 
 ### Added
