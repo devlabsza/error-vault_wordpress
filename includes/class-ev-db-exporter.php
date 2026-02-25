@@ -27,6 +27,9 @@ class EV_DB_Exporter {
      * Export database to SQL file
      */
     public function export_to_sql($target_sql_path) {
+        @set_time_limit(600);
+        @ini_set('max_execution_time', '600');
+        
         try {
             $handle = fopen($target_sql_path, 'w');
             
@@ -141,7 +144,7 @@ class EV_DB_Exporter {
      * Export table data in batches
      */
     private function export_table_data($handle, $table) {
-        $batch_size = 100;
+        $batch_size = 50;
         $offset = 0;
 
         $count_query = "SELECT COUNT(*) FROM `{$table}`";
@@ -149,6 +152,12 @@ class EV_DB_Exporter {
 
         if ($total_rows == 0) {
             return;
+        }
+
+        $start_time = microtime(true);
+        
+        if ($total_rows > 1000) {
+            $this->log('Exporting ' . $table . ' (' . number_format($total_rows) . ' rows)...');
         }
 
         while ($offset < $total_rows) {
@@ -163,12 +172,15 @@ class EV_DB_Exporter {
 
             $offset += $batch_size;
 
-            if ($offset % 1000 === 0) {
-                $this->log('Exported ' . $offset . ' rows from ' . $table);
+            if ($offset % 500 === 0) {
+                $elapsed = round(microtime(true) - $start_time, 2);
+                $percent = round(($offset / $total_rows) * 100);
+                $this->log('  ' . $table . ': ' . number_format($offset) . '/' . number_format($total_rows) . ' rows (' . $percent . '%) - ' . $elapsed . 's');
             }
         }
 
-        $this->log('Completed export of ' . $table . ' (' . $total_rows . ' rows)');
+        $total_time = round(microtime(true) - $start_time, 2);
+        $this->log('Completed ' . $table . ': ' . number_format($total_rows) . ' rows in ' . $total_time . 's');
     }
 
     /**

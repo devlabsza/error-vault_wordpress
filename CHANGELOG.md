@@ -2,6 +2,34 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.4.2] - 2026-02-25
+
+### Fixed
+- **Database Export Timeout Issues**
+  - Extended PHP execution time limit to 600 seconds (10 minutes)
+  - Increased memory limit to 512M for large databases
+  - Reduced batch size from 100 to 50 rows for better memory management
+  - Added execution time extension in both backup manager and exporter
+
+### Added
+- **Enhanced Progress Logging**
+  - Detailed per-table export progress with row counts and percentages
+  - Progress updates every 500 rows for large tables
+  - Time tracking for database export, archive creation, and total backup
+  - PHP configuration logging (max_execution_time, memory_limit)
+  - Warning when backup exceeds 5 minutes
+- **Better Error Reporting**
+  - Elapsed time included in all error messages
+  - Detailed timing for each backup phase
+  - Microtime precision for table export timing
+
+### Changed
+- Batch size reduced from 100 to 50 rows for improved performance
+- Progress logging frequency increased (every 500 rows instead of 1000)
+- Large tables (>1000 rows) now show detailed progress updates
+
+---
+
 ## [1.4.1] - 2026-02-25
 
 ### Added

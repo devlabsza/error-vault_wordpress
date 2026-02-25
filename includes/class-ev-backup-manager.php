@@ -140,8 +140,16 @@ class EV_Backup_Manager {
             $exporter = new EV_DB_Exporter();
             
             $this->log('Exporting database...');
+            $export_start = time();
             if (!$exporter->export_to_sql($sql_path)) {
                 throw new Exception('Database export failed');
+            }
+            $export_time = time() - $export_start;
+            $this->log('Database export completed in ' . $export_time . ' seconds');
+
+            $elapsed = time() - $start_time;
+            if ($elapsed > 300) {
+                $this->log('WARNING: Backup taking longer than expected (' . $elapsed . 's elapsed)');
             }
 
             $this->log('Building ZIP archive...');
@@ -178,7 +186,8 @@ class EV_Backup_Manager {
                 throw new Exception('Upload failed: ' . $upload_result['error']);
             }
 
-            $this->log('Backup completed successfully');
+            $total_time = time() - $start_time;
+            $this->log('Backup completed successfully in ' . $total_time . ' seconds');
 
             @unlink($sql_path);
             @unlink($zip_path);
@@ -187,7 +196,8 @@ class EV_Backup_Manager {
             return true;
 
         } catch (Exception $e) {
-            $this->log('Backup failed: ' . $e->getMessage());
+            $elapsed = isset($start_time) ? (time() - $start_time) : 0;
+            $this->log('Backup failed after ' . $elapsed . ' seconds: ' . $e->getMessage());
             
             if (isset($sql_path) && file_exists($sql_path)) {
                 @unlink($sql_path);
