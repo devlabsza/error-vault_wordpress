@@ -2,6 +2,42 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.4.4] - 2026-02-26
+
+### Fixed
+- **HTTP 413 Upload Errors (Payload Too Large)**
+  - Replaced single-file upload with chunked multipart upload
+  - Files are now uploaded in 5MB chunks to avoid server size limits
+  - Fixes "HTTP 413" errors on backups larger than ~10MB
+
+### Added
+- **Chunked Multipart Upload System**
+  - Three-phase upload: initiate, upload chunks, complete
+  - 5MB chunk size for optimal performance
+  - Progress logging every 5 chunks
+  - Automatic abort on failure with cleanup
+  - Per-chunk retry logic with exponential backoff (up to 3 retries)
+  - ETag tracking for each uploaded part
+
+### Changed
+- Upload endpoint structure:
+  - `POST /api/v1/backups/{id}/upload/initiate` - Start multipart upload
+  - `POST /api/v1/backups/{id}/upload/part` - Upload individual chunk
+  - `POST /api/v1/backups/{id}/upload/complete` - Finalize upload
+  - `POST /api/v1/backups/{id}/upload/abort` - Cancel failed upload
+- Improved error messages with specific failure points
+- Better handling of 409 Conflict (backup no longer accepting uploads)
+- Reduced memory usage by streaming file in chunks instead of loading entire file
+
+### Technical Details
+- Chunk size: 5MB (5 * 1024 * 1024 bytes)
+- Max retries per chunk: 3 with exponential backoff (2^n seconds)
+- Chunk timeout: 120 seconds
+- Initiate/complete timeout: 30-60 seconds
+- Headers: X-Upload-ID, X-Part-Number for chunk identification
+
+---
+
 ## [1.4.3] - 2026-02-26
 
 ### Fixed

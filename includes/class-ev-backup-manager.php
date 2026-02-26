@@ -309,62 +309,162 @@ class EV_Backup_Manager {
     }
 
     /**
-     * Upload backup archive to API
+     * Upload backup archive to API using chunked multipart upload
      */
     private function upload_archive($backup_id, $file_path, $checksum, $metadata) {
-        $endpoint = $this->api_base . '/api/v1/backups/' . $backup_id . '/upload';
-
-        $boundary = wp_generate_password(24, false);
-        $file_contents = file_get_contents($file_path);
-        $filename = basename($file_path);
-
-        $body = '';
+        $file_size = filesize($file_path);
+        $chunk_size = 5 * 1024 * 1024; // 5MB chunks
+        $total_chunks = ceil($file_size / $chunk_size);
         
-        $body .= '--' . $boundary . "\r\n";
-        $body .= 'Content-Disposition: form-data; name="backup_archive"; filename="' . $filename . '"' . "\r\n";
-        $body .= 'Content-Type: application/zip' . "\r\n\r\n";
-        $body .= $file_contents . "\r\n";
+        $this->log('Starting chunked upload: ' . $total_chunks . ' chunks of ' . round($chunk_size / 1024 / 1024, 2) . 'MB');
 
-        $body .= '--' . $boundary . "\r\n";
-        $body .= 'Content-Disposition: form-data; name="checksum"' . "\r\n\r\n";
-        $body .= $checksum . "\r\n";
+        // Step 1: Initiate multipart upload
+        $upload_id = $this->initiate_multipart_upload($backup_id, $checksum, $metadata);
+        if (!$upload_id) {
+            return array(
+                'success' => false,
+                'error' => 'Failed to initiate multipart upload',
+            );
+        }
 
-        $body .= '--' . $boundary . "\r\n";
-        $body .= 'Content-Disposition: form-data; name="metadata"' . "\r\n\r\n";
-        $body .= wp_json_encode($metadata) . "\r\n";
+        // Step 2: Upload chunks
+        $uploaded_parts = array();
+        $handle = fopen($file_path, 'rb');
+        
+        if (!$handle) {
+            return array(
+                'success' => false,
+                'error' => 'Failed to open file for reading',
+            );
+        }
 
-        $body .= '--' . $boundary . '--' . "\r\n";
+        for ($chunk_num = 1; $chunk_num <= $total_chunks; $chunk_num++) {
+            $chunk_data = fread($handle, $chunk_size);
+            
+            if ($chunk_data === false) {
+                fclose($handle);
+                $this->abort_multipart_upload($backup_id, $upload_id);
+                return array(
+                    'success' => false,
+                    'error' => 'Failed to read chunk ' . $chunk_num,
+                );
+            }
 
-        $max_retries = 2;
+            $part_result = $this->upload_chunk($backup_id, $upload_id, $chunk_num, $chunk_data);
+            
+            if (!$part_result['success']) {
+                fclose($handle);
+                $this->abort_multipart_upload($backup_id, $upload_id);
+                return array(
+                    'success' => false,
+                    'error' => 'Failed to upload chunk ' . $chunk_num . ': ' . $part_result['error'],
+                );
+            }
+
+            $uploaded_parts[] = array(
+                'part_number' => $chunk_num,
+                'etag' => $part_result['etag'],
+            );
+
+            if ($chunk_num % 5 === 0 || $chunk_num === $total_chunks) {
+                $percent = round(($chunk_num / $total_chunks) * 100);
+                $this->log('Upload progress: ' . $chunk_num . '/' . $total_chunks . ' chunks (' . $percent . '%)');
+            }
+        }
+
+        fclose($handle);
+
+        // Step 3: Complete multipart upload
+        $complete_result = $this->complete_multipart_upload($backup_id, $upload_id, $uploaded_parts);
+        
+        if (!$complete_result['success']) {
+            return array(
+                'success' => false,
+                'error' => 'Failed to complete upload: ' . $complete_result['error'],
+            );
+        }
+
+        $this->log('Upload completed successfully');
+        return array('success' => true);
+    }
+
+    /**
+     * Initiate multipart upload
+     */
+    private function initiate_multipart_upload($backup_id, $checksum, $metadata) {
+        $endpoint = $this->api_base . '/api/v1/backups/' . $backup_id . '/upload/initiate';
+
+        $response = wp_remote_post($endpoint, array(
+            'timeout' => 30,
+            'headers' => array(
+                'X-API-Token' => $this->api_token,
+                'Content-Type' => 'application/json',
+                'User-Agent' => 'ErrorVault-WordPress/' . ERRORVAULT_VERSION,
+            ),
+            'body' => wp_json_encode(array(
+                'checksum' => $checksum,
+                'metadata' => $metadata,
+            )),
+        ));
+
+        if (is_wp_error($response)) {
+            $this->log('Initiate upload error: ' . $response->get_error_message());
+            return false;
+        }
+
+        $status_code = wp_remote_retrieve_response_code($response);
+        
+        if ($status_code !== 200) {
+            $body = wp_remote_retrieve_body($response);
+            $this->log('Initiate upload failed with HTTP ' . $status_code . ': ' . $body);
+            return false;
+        }
+
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (!isset($body['upload_id'])) {
+            $this->log('No upload_id in response');
+            return false;
+        }
+
+        $this->log('Multipart upload initiated: ' . $body['upload_id']);
+        return $body['upload_id'];
+    }
+
+    /**
+     * Upload a single chunk
+     */
+    private function upload_chunk($backup_id, $upload_id, $part_number, $chunk_data) {
+        $endpoint = $this->api_base . '/api/v1/backups/' . $backup_id . '/upload/part';
+
+        $max_retries = 3;
         $retry_count = 0;
-        $backoff = 2;
 
         while ($retry_count <= $max_retries) {
             if ($retry_count > 0) {
-                $wait_time = $backoff * $retry_count;
-                $this->log('Retry ' . $retry_count . ' after ' . $wait_time . ' seconds...');
+                $wait_time = pow(2, $retry_count);
+                $this->log('Retrying chunk ' . $part_number . ' after ' . $wait_time . ' seconds...');
                 sleep($wait_time);
             }
 
             $response = wp_remote_post($endpoint, array(
-                'timeout' => 300,
+                'timeout' => 120,
                 'headers' => array(
                     'X-API-Token' => $this->api_token,
-                    'Content-Type' => 'multipart/form-data; boundary=' . $boundary,
+                    'Content-Type' => 'application/octet-stream',
+                    'X-Upload-ID' => $upload_id,
+                    'X-Part-Number' => $part_number,
                     'User-Agent' => 'ErrorVault-WordPress/' . ERRORVAULT_VERSION,
                 ),
-                'body' => $body,
+                'body' => $chunk_data,
             ));
 
             if (is_wp_error($response)) {
-                $error_msg = $response->get_error_message();
-                $this->log('Upload error: ' . $error_msg);
-                
                 $retry_count++;
                 if ($retry_count > $max_retries) {
                     return array(
                         'success' => false,
-                        'error' => $error_msg,
+                        'error' => $response->get_error_message(),
                     );
                 }
                 continue;
@@ -372,19 +472,14 @@ class EV_Backup_Manager {
 
             $status_code = wp_remote_retrieve_response_code($response);
 
-            if ($status_code === 409) {
+            if ($status_code === 200) {
+                $body = json_decode(wp_remote_retrieve_body($response), true);
                 return array(
-                    'success' => false,
-                    'error' => 'Backup no longer accepting uploads (409 Conflict)',
+                    'success' => true,
+                    'etag' => isset($body['etag']) ? $body['etag'] : md5($chunk_data),
                 );
             }
 
-            if ($status_code >= 200 && $status_code < 300) {
-                return array('success' => true);
-            }
-
-            $this->log('Upload failed with HTTP ' . $status_code);
-            
             $retry_count++;
             if ($retry_count > $max_retries) {
                 return array(
@@ -398,6 +493,73 @@ class EV_Backup_Manager {
             'success' => false,
             'error' => 'Max retries exceeded',
         );
+    }
+
+    /**
+     * Complete multipart upload
+     */
+    private function complete_multipart_upload($backup_id, $upload_id, $parts) {
+        $endpoint = $this->api_base . '/api/v1/backups/' . $backup_id . '/upload/complete';
+
+        $response = wp_remote_post($endpoint, array(
+            'timeout' => 60,
+            'headers' => array(
+                'X-API-Token' => $this->api_token,
+                'Content-Type' => 'application/json',
+                'User-Agent' => 'ErrorVault-WordPress/' . ERRORVAULT_VERSION,
+            ),
+            'body' => wp_json_encode(array(
+                'upload_id' => $upload_id,
+                'parts' => $parts,
+            )),
+        ));
+
+        if (is_wp_error($response)) {
+            return array(
+                'success' => false,
+                'error' => $response->get_error_message(),
+            );
+        }
+
+        $status_code = wp_remote_retrieve_response_code($response);
+
+        if ($status_code === 409) {
+            return array(
+                'success' => false,
+                'error' => 'Backup no longer accepting uploads (409 Conflict)',
+            );
+        }
+
+        if ($status_code >= 200 && $status_code < 300) {
+            return array('success' => true);
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        return array(
+            'success' => false,
+            'error' => 'HTTP ' . $status_code . ': ' . $body,
+        );
+    }
+
+    /**
+     * Abort multipart upload
+     */
+    private function abort_multipart_upload($backup_id, $upload_id) {
+        $endpoint = $this->api_base . '/api/v1/backups/' . $backup_id . '/upload/abort';
+
+        $this->log('Aborting multipart upload: ' . $upload_id);
+
+        wp_remote_post($endpoint, array(
+            'timeout' => 30,
+            'headers' => array(
+                'X-API-Token' => $this->api_token,
+                'Content-Type' => 'application/json',
+                'User-Agent' => 'ErrorVault-WordPress/' . ERRORVAULT_VERSION,
+            ),
+            'body' => wp_json_encode(array(
+                'upload_id' => $upload_id,
+            )),
+        ));
     }
 
     /**
