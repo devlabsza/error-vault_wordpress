@@ -2,6 +2,29 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.4.5] - 2026-02-26
+
+### Fixed
+- **Critical: Plugin Deactivation After Update**
+  - Fixed "Plugin file does not exist" error after auto-update
+  - Added plugin-specific check in `after_install` hook
+  - Added `upgrader_clear_destination` filter for better update handling
+  - Set `destination_name` to ensure WordPress recognizes plugin folder
+  - Enhanced logging to debug update process
+
+### Changed
+- `after_install` now only processes updates for errorvault-wordpress plugin
+- Added `clear_destination` filter to handle pre-update cleanup
+- Improved error logging with plugin basename tracking
+
+### Technical Details
+- Check `$hook_extra['plugin']` matches `$this->plugin_slug` before processing
+- Set `$result['destination_name']` to 'errorvault-wordpress'
+- Log plugin basename during update process
+- Ensures WordPress maintains plugin activation state after update
+
+---
+
 ## [1.4.4] - 2026-02-26
 
 ### Fixed

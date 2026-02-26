@@ -53,6 +53,9 @@ class ErrorVault_Updater {
         add_filter('pre_set_site_transient_update_plugins', array($this, 'check_for_update'));
         add_filter('plugins_api', array($this, 'plugin_info'), 10, 3);
         add_filter('upgrader_post_install', array($this, 'after_install'), 10, 3);
+        
+        // Preserve plugin activation state after update
+        add_filter('upgrader_clear_destination', array($this, 'clear_destination'), 10, 4);
     }
 
     /**
@@ -140,20 +143,52 @@ class ErrorVault_Updater {
     }
 
     /**
+     * Clear destination before installing update
+     * This ensures clean installation
+     */
+    public function clear_destination($removed, $local_destination, $remote_destination, $hook_extra) {
+        global $wp_filesystem;
+        
+        // Only handle our plugin
+        if (!isset($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_slug) {
+            return $removed;
+        }
+        
+        error_log('[ErrorVault Updater] Clear destination called');
+        error_log('[ErrorVault Updater] Local: ' . $local_destination);
+        error_log('[ErrorVault Updater] Remote: ' . $remote_destination);
+        
+        // If remote destination is our properly named folder, we're good
+        if (basename($remote_destination) === 'errorvault-wordpress') {
+            return $removed;
+        }
+        
+        // Otherwise, we need to handle the rename
+        return $removed;
+    }
+
+    /**
      * After plugin installation
      * Handles proper plugin folder naming after extraction
      */
     public function after_install($response, $hook_extra, $result) {
         global $wp_filesystem;
 
+        // Only handle our plugin
+        if (!isset($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_slug) {
+            return $result;
+        }
+
         $proper_destination = WP_PLUGIN_DIR . '/errorvault-wordpress';
         
         error_log('[ErrorVault Updater] After install - Current destination: ' . $result['destination']);
         error_log('[ErrorVault Updater] After install - Proper destination: ' . $proper_destination);
+        error_log('[ErrorVault Updater] After install - Plugin: ' . $hook_extra['plugin']);
         
         // If the destination is already correct (from our properly named ZIP), we're done
         if ($result['destination'] === $proper_destination) {
             error_log('[ErrorVault Updater] Destination already correct, no rename needed');
+            $result['destination_name'] = 'errorvault-wordpress';
             return $result;
         }
         
