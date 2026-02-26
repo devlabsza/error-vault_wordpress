@@ -139,6 +139,11 @@ class EV_Backup_Manager {
 
         $start_time = time();
         try {
+            // Set aggressive limits for very large databases
+            @set_time_limit(0);
+            @ini_set('max_execution_time', '0');
+            @ini_set('memory_limit', '1024M');
+            
             $upload_dir = wp_upload_dir();
             $tmp_dir = $upload_dir['basedir'] . '/errorvault-backups/tmp';
             
@@ -152,17 +157,17 @@ class EV_Backup_Manager {
             require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-ev-db-exporter.php';
             $exporter = new EV_DB_Exporter();
             
-            $this->log('Exporting database...');
+            $this->log('Exporting database... (this may take several minutes for large databases)');
             $export_start = time();
             if (!$exporter->export_to_sql($sql_path)) {
                 throw new Exception('Database export failed');
             }
             $export_time = time() - $export_start;
-            $this->log('Database export completed in ' . $export_time . ' seconds');
+            $this->log('Database export completed in ' . round($export_time/60, 1) . ' minutes');
 
             $elapsed = time() - $start_time;
-            if ($elapsed > 300) {
-                $this->log('WARNING: Backup taking longer than expected (' . $elapsed . 's elapsed)');
+            if ($elapsed > 600) {
+                $this->log('INFO: Large database detected - backup has been running for ' . round($elapsed/60, 1) . ' minutes');
             }
 
             $this->log('Building ZIP archive...');

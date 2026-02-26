@@ -27,8 +27,12 @@ class EV_DB_Exporter {
      * Export database to SQL file
      */
     public function export_to_sql($target_sql_path) {
-        @set_time_limit(600);
-        @ini_set('max_execution_time', '600');
+        // Aggressive time limit for very large databases
+        @set_time_limit(0);
+        @ini_set('max_execution_time', '0');
+        @ini_set('memory_limit', '1024M');
+        
+        $start_time = time();
         
         try {
             $handle = fopen($target_sql_path, 'w');
@@ -51,6 +55,14 @@ class EV_DB_Exporter {
             $this->log('Exporting ' . count($tables) . ' tables...');
 
             foreach ($tables as $table) {
+                // Reset time limit for each table
+                @set_time_limit(0);
+                
+                $elapsed = time() - $start_time;
+                if ($elapsed > 1200) { // 20 minutes
+                    $this->log('WARNING: Export taking very long (' . round($elapsed/60, 1) . ' minutes). Consider database optimization.');
+                }
+                
                 $this->export_table($handle, $table);
             }
 
@@ -58,7 +70,11 @@ class EV_DB_Exporter {
 
             fclose($handle);
 
-            $this->log('Database export completed: ' . $target_sql_path);
+            $total_time = time() - $start_time;
+            $file_size = filesize($target_sql_path);
+            $file_size_mb = round($file_size / 1024 / 1024, 2);
+            
+            $this->log('Database export completed: ' . $file_size_mb . 'MB in ' . round($total_time/60, 1) . ' minutes');
             return true;
 
         } catch (Exception $e) {
@@ -144,7 +160,8 @@ class EV_DB_Exporter {
      * Export table data in batches
      */
     private function export_table_data($handle, $table) {
-        $batch_size = 50;
+        // Smaller batch size for very large tables to prevent memory issues
+        $batch_size = 25;
         $offset = 0;
 
         $count_query = "SELECT COUNT(*) FROM `{$table}`";
@@ -171,8 +188,12 @@ class EV_DB_Exporter {
             $this->write_insert_statements($handle, $table, $rows);
 
             $offset += $batch_size;
-
-            if ($offset % 500 === 0) {
+            
+            // Free memory
+            unset($rows);
+            
+            // More frequent progress updates
+            if ($offset % 250 === 0) {
                 $elapsed = round(microtime(true) - $start_time, 2);
                 $percent = round(($offset / $total_rows) * 100);
                 $this->log('  ' . $table . ': ' . number_format($offset) . '/' . number_format($total_rows) . ' rows (' . $percent . '%) - ' . $elapsed . 's');
