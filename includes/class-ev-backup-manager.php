@@ -123,8 +123,21 @@ class EV_Backup_Manager {
      * Run backup process
      */
     public function run_backup($backup_id, $include_uploads) {
-        $this->log('Starting backup: ID=' . $backup_id);
+        // Check failure count for this backup
+        $failure_key = 'ev_backup_failures_' . $backup_id;
+        $failure_count = (int) get_transient($failure_key);
+        
+        if ($failure_count >= 3) {
+            $this->log('Backup ID=' . $backup_id . ' has failed 3 times, marking as failed and stopping retries');
+            $this->mark_backup_failed($backup_id, 'Maximum retry attempts exceeded (3 failures)');
+            delete_transient($failure_key);
+            delete_transient('ev_backup_lock');
+            return false;
+        }
+        
+        $this->log('Starting backup: ID=' . $backup_id . ' (attempt ' . ($failure_count + 1) . '/3)');
 
+        $start_time = time();
         try {
             $upload_dir = wp_upload_dir();
             $tmp_dir = $upload_dir['basedir'] . '/errorvault-backups/tmp';
@@ -192,12 +205,27 @@ class EV_Backup_Manager {
             @unlink($sql_path);
             @unlink($zip_path);
 
+            // Clear failure count on success
+            delete_transient('ev_backup_failures_' . $backup_id);
             delete_transient('ev_backup_lock');
             return true;
 
         } catch (Exception $e) {
             $elapsed = isset($start_time) ? (time() - $start_time) : 0;
+            $failure_count++;
+            
             $this->log('Backup failed after ' . $elapsed . ' seconds: ' . $e->getMessage());
+            $this->log('Failure count for backup ID=' . $backup_id . ': ' . $failure_count . '/3');
+            
+            // Track failure count
+            set_transient($failure_key, $failure_count, 24 * HOUR_IN_SECONDS);
+            
+            // If this was the 3rd failure, mark as failed on portal
+            if ($failure_count >= 3) {
+                $this->log('Maximum retries reached, marking backup as failed on portal');
+                $this->mark_backup_failed($backup_id, $e->getMessage());
+                delete_transient($failure_key);
+            }
             
             if (isset($sql_path) && file_exists($sql_path)) {
                 @unlink($sql_path);
@@ -583,6 +611,43 @@ class EV_Backup_Manager {
                 'upload_id' => $upload_id,
             )),
         ));
+    }
+
+    /**
+     * Mark backup as failed on portal
+     */
+    private function mark_backup_failed($backup_id, $error_message) {
+        $endpoint = $this->api_base . '/api/v1/backups/' . $backup_id . '/fail';
+
+        $this->log('Marking backup as failed on portal: ' . $backup_id);
+
+        $response = wp_remote_post($endpoint, array(
+            'timeout' => 30,
+            'headers' => array(
+                'X-API-Token' => $this->api_token,
+                'Content-Type' => 'application/json',
+                'User-Agent' => 'ErrorVault-WordPress/' . ERRORVAULT_VERSION,
+            ),
+            'body' => wp_json_encode(array(
+                'error' => $error_message,
+                'failed_at' => current_time('mysql'),
+            )),
+        ));
+
+        if (is_wp_error($response)) {
+            $this->log('Failed to mark backup as failed: ' . $response->get_error_message());
+            return false;
+        }
+
+        $status_code = wp_remote_retrieve_response_code($response);
+        
+        if ($status_code >= 200 && $status_code < 300) {
+            $this->log('Backup marked as failed on portal successfully');
+            return true;
+        }
+
+        $this->log('Failed to mark backup as failed: HTTP ' . $status_code);
+        return false;
     }
 
     /**

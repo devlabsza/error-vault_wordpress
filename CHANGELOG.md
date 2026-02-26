@@ -2,6 +2,64 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.4.7] - 2026-02-26
+
+### Fixed
+- **Infinite Retry Loop on Failed Backups**
+  - Backups now stop after 3 failed attempts
+  - Portal is notified when backup permanently fails
+  - Failure count tracked per backup ID
+  - Prevents endless retry cycles
+
+### Added
+- **Failure Tracking System**
+  - Track failure count per backup ID using transients
+  - Log attempt number (1/3, 2/3, 3/3)
+  - Auto-cancel after 3 failures
+  - Clear failure count on successful backup
+
+- **Portal Notification on Failure**
+  - New `mark_backup_failed()` method
+  - POST to `/api/v1/backups/{id}/fail`
+  - Sends error message and timestamp
+  - Allows portal to update backup status
+
+### Changed
+- Backup attempts now show "attempt X/3" in logs
+- After 3 failures, backup is marked as failed and removed from queue
+- Failure transients expire after 24 hours
+- Better logging for failure tracking
+
+### Backend API Required
+- **New Endpoint:** `POST /api/v1/backups/{id}/fail`
+  - Marks backup as permanently failed
+  - Request body: `{"error": "error message", "failed_at": "timestamp"}`
+  - Should update backup status to "failed" and remove from pending queue
+
+---
+
+## [1.4.6] - 2026-02-26
+
+### Fixed
+- **ZIP Archive Creation Failure**
+  - Added file existence check before adding to ZIP
+  - Added file readability check
+  - Better error logging with actual file paths
+  - Log SQL file size before adding to archive
+
+### Added
+- **Enhanced Diagnostic Logging**
+  - Log when SQL file doesn't exist at expected path
+  - Log when SQL file exists but isn't readable
+  - Log SQL file size before ZIP creation
+  - More specific error messages for troubleshooting
+
+### Changed
+- Improved error messages to include actual file paths
+- Better visibility into ZIP creation process
+
+---
+
 ## [1.4.5] - 2026-02-26
 
 ### Fixed
