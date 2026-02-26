@@ -27,6 +27,13 @@ class EV_DB_Exporter {
      * Export database to SQL file
      */
     public function export_to_sql($target_sql_path) {
+        // Try mysqldump first (much faster for large databases)
+        if ($this->try_mysqldump($target_sql_path)) {
+            return true;
+        }
+        
+        $this->log('mysqldump not available, falling back to PHP export');
+        
         // Aggressive time limit for very large databases
         @set_time_limit(0);
         @ini_set('max_execution_time', '0');
@@ -131,6 +138,88 @@ class EV_DB_Exporter {
         }
 
         return $tables;
+    }
+
+    /**
+     * Try to use mysqldump (much faster for large databases)
+     */
+    private function try_mysqldump($target_sql_path) {
+        // Check if mysqldump is available
+        $mysqldump_path = $this->find_mysqldump();
+        
+        if (!$mysqldump_path) {
+            return false;
+        }
+        
+        $this->log('Using mysqldump for faster export');
+        
+        $host = DB_HOST;
+        $port = 3306;
+        
+        // Handle host:port format
+        if (strpos($host, ':') !== false) {
+            list($host, $port) = explode(':', $host, 2);
+        }
+        
+        // Build mysqldump command
+        $command = sprintf(
+            '%s --host=%s --port=%s --user=%s --password=%s --single-transaction --quick --lock-tables=false %s > %s 2>&1',
+            escapeshellarg($mysqldump_path),
+            escapeshellarg($host),
+            escapeshellarg($port),
+            escapeshellarg(DB_USER),
+            escapeshellarg(DB_PASSWORD),
+            escapeshellarg(DB_NAME),
+            escapeshellarg($target_sql_path)
+        );
+        
+        $start_time = time();
+        exec($command, $output, $return_code);
+        $elapsed = time() - $start_time;
+        
+        if ($return_code === 0 && file_exists($target_sql_path) && filesize($target_sql_path) > 0) {
+            $file_size_mb = round(filesize($target_sql_path) / 1024 / 1024, 2);
+            $this->log('mysqldump completed: ' . $file_size_mb . 'MB in ' . round($elapsed/60, 1) . ' minutes');
+            return true;
+        }
+        
+        $this->log('mysqldump failed with return code: ' . $return_code);
+        if (!empty($output)) {
+            $this->log('mysqldump error: ' . implode('\n', $output));
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Find mysqldump binary
+     */
+    private function find_mysqldump() {
+        $possible_paths = array(
+            '/usr/bin/mysqldump',
+            '/usr/local/bin/mysqldump',
+            '/usr/local/mysql/bin/mysqldump',
+            'mysqldump', // Try PATH
+        );
+        
+        foreach ($possible_paths as $path) {
+            if (@is_executable($path)) {
+                return $path;
+            }
+            
+            // Try which command
+            if ($path === 'mysqldump') {
+                $which = @shell_exec('which mysqldump 2>/dev/null');
+                if ($which && trim($which)) {
+                    $which = trim($which);
+                    if (@is_executable($which)) {
+                        return $which;
+                    }
+                }
+            }
+        }
+        
+        return false;
     }
 
     /**

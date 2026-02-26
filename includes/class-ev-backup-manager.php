@@ -217,9 +217,13 @@ class EV_Backup_Manager {
 
         } catch (Exception $e) {
             $elapsed = isset($start_time) ? (time() - $start_time) : 0;
+            
+            // Re-get failure count and increment
+            $failure_key = 'ev_backup_failures_' . $backup_id;
+            $failure_count = (int) get_transient($failure_key);
             $failure_count++;
             
-            $this->log('Backup failed after ' . $elapsed . ' seconds: ' . $e->getMessage());
+            $this->log('Backup failed after ' . round($elapsed/60, 1) . ' minutes: ' . $e->getMessage());
             $this->log('Failure count for backup ID=' . $backup_id . ': ' . $failure_count . '/3');
             
             // Track failure count

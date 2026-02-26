@@ -2,6 +2,77 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.4.9] - 2026-02-26
+
+### Fixed
+- **Critical: Database Export Timeout on Very Large Databases**
+  - PHP export was being killed silently by web server
+  - Backups never completed, always showed "attempt 1/3"
+  - Failure counter couldn't increment because export never threw exception
+
+### Added
+- **mysqldump Support (Primary Export Method)**
+  - Automatically uses `mysqldump` if available (10-100x faster)
+  - Falls back to PHP export if mysqldump not found
+  - Handles large databases that timeout in PHP
+  - Searches common paths: `/usr/bin/mysqldump`, `/usr/local/bin/mysqldump`, etc.
+  - Uses `--single-transaction` and `--quick` for optimal performance
+
+- **Fixed Failure Counter Variable Scope**
+  - Re-reads failure count in catch block
+  - Properly increments and saves to transient
+  - Now correctly shows "attempt 1/3", "attempt 2/3", "attempt 3/3"
+  - Stops after 3 failures and marks backup as failed on portal
+
+### Changed
+- **Export Method Priority**
+  1. Try `mysqldump` first (fastest, handles any size)
+  2. Fall back to PHP export if mysqldump unavailable
+  3. Log which method is being used
+
+### Performance
+- **mysqldump Benefits**
+  - Can export multi-GB databases in minutes
+  - No PHP memory limits
+  - No execution time limits
+  - Native MySQL performance
+  - Handles millions of rows efficiently
+
+---
+
+## [1.4.8] - 2026-02-26
+
+### Fixed
+- **Database Export Timeout for Very Large Databases**
+  - Removed time limits (set to 0 = unlimited)
+  - Increased memory limit to 1024M
+  - Reduced batch size from 50 to 25 rows for better memory management
+  - Added memory cleanup after each batch
+
+### Added
+- **Better Progress Tracking for Large Exports**
+  - More frequent progress updates (every 250 rows instead of 500)
+  - Log total export time in minutes instead of seconds
+  - Log final SQL file size after export
+  - Warning message if export takes longer than 20 minutes
+  - Better visibility into which tables are being processed
+
+### Changed
+- **Batch Processing Optimization**
+  - Reduced batch size to 25 rows (was 50) to prevent memory exhaustion
+  - Added `unset($rows)` after each batch to free memory immediately
+  - Reset time limit for each table to prevent mid-table timeouts
+  - More aggressive memory management for multi-million row tables
+
+### Performance
+- **Unlimited Execution Time**
+  - `set_time_limit(0)` for both backup manager and exporter
+  - Allows backups to run as long as needed for very large databases
+  - Better suited for shared hosting with large databases
+  - Prevents timeout errors on databases with millions of rows
+
+---
+
 ## [1.4.7] - 2026-02-26
 
 ### Fixed
