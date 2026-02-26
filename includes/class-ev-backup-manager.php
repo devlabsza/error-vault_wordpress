@@ -232,8 +232,31 @@ class EV_Backup_Manager {
             );
         }
 
+        // Verify SQL file exists before adding
+        if (!file_exists($sql_path)) {
+            $zip->close();
+            $this->log('ERROR: SQL file does not exist at: ' . $sql_path);
+            return array(
+                'success' => false,
+                'error' => 'SQL file not found at: ' . $sql_path,
+            );
+        }
+
+        if (!is_readable($sql_path)) {
+            $zip->close();
+            $this->log('ERROR: SQL file is not readable: ' . $sql_path);
+            return array(
+                'success' => false,
+                'error' => 'SQL file not readable: ' . $sql_path,
+            );
+        }
+
+        $sql_size = filesize($sql_path);
+        $this->log('Adding database.sql to archive (' . round($sql_size / 1024 / 1024, 2) . 'MB)');
+
         if (!$zip->addFile($sql_path, 'database.sql')) {
             $zip->close();
+            $this->log('ERROR: ZipArchive::addFile() failed for: ' . $sql_path);
             return array(
                 'success' => false,
                 'error' => 'Failed to add database.sql to archive',
