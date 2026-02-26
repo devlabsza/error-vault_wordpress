@@ -66,24 +66,29 @@ class ErrorVault_Updater {
         // Get latest release from GitHub
         $release = $this->get_latest_release();
 
-        if ($release && version_compare($this->version, $release->tag_name, '<')) {
+        if ($release && version_compare($this->version, ltrim($release->tag_name, 'v'), '<')) {
             // Try to find properly named release asset first
             $package_url = $this->get_release_asset_url($release);
             
             // Fallback to zipball if no asset found (will require folder renaming)
             if (!$package_url) {
                 $package_url = $release->zipball_url;
+                error_log('[ErrorVault Updater] Using zipball URL (no release asset found): ' . $package_url);
+            } else {
+                error_log('[ErrorVault Updater] Using release asset: ' . $package_url);
             }
             
             $plugin_data = array(
-                'slug' => dirname($this->plugin_slug),
-                'new_version' => $release->tag_name,
+                'slug' => 'errorvault-wordpress',
+                'plugin' => 'errorvault-wordpress/errorvault.php',
+                'new_version' => ltrim($release->tag_name, 'v'),
                 'url' => "https://github.com/{$this->github_user}/{$this->github_repo}",
                 'package' => $package_url,
                 'tested' => '6.4',
                 'requires_php' => '7.4',
             );
 
+            error_log('[ErrorVault Updater] Update available: ' . $this->version . ' -> ' . ltrim($release->tag_name, 'v'));
             $transient->response[$this->plugin_slug] = (object) $plugin_data;
         }
 
@@ -98,7 +103,7 @@ class ErrorVault_Updater {
             return $false;
         }
 
-        if (!isset($args->slug) || $args->slug !== dirname($this->plugin_slug)) {
+        if (!isset($args->slug) || $args->slug !== 'errorvault-wordpress') {
             return $false;
         }
 
@@ -108,16 +113,22 @@ class ErrorVault_Updater {
             return $false;
         }
 
+        // Get the package URL (prefer asset, fallback to zipball)
+        $package_url = $this->get_release_asset_url($release);
+        if (!$package_url) {
+            $package_url = $release->zipball_url;
+        }
+
         $plugin_info = array(
             'name' => 'ErrorVault',
-            'slug' => dirname($this->plugin_slug),
-            'version' => $release->tag_name,
+            'slug' => 'errorvault-wordpress',
+            'version' => ltrim($release->tag_name, 'v'),
             'author' => '<a href="https://errorvault.com">ErrorVault</a>',
             'homepage' => "https://github.com/{$this->github_user}/{$this->github_repo}",
             'requires' => '5.8',
             'tested' => '6.4',
             'requires_php' => '7.4',
-            'download_link' => $release->zipball_url,
+            'download_link' => $package_url,
             'sections' => array(
                 'description' => $this->parse_markdown_description($release->body),
                 'changelog' => $this->parse_changelog($release->body),
@@ -130,23 +141,44 @@ class ErrorVault_Updater {
 
     /**
      * After plugin installation
-     * Handles GitHub's folder naming (repo-tag format) and renames to correct plugin folder
+     * Handles proper plugin folder naming after extraction
      */
     public function after_install($response, $hook_extra, $result) {
         global $wp_filesystem;
 
-        // GitHub names the folder as "repo-name-tag" (e.g., error-vault_wordpress-1.3.1)
-        // We need to rename it to just "errorvault-wordpress"
         $proper_destination = WP_PLUGIN_DIR . '/errorvault-wordpress';
         
-        // Remove old plugin folder if it exists
-        if ($wp_filesystem->exists($proper_destination)) {
-            $wp_filesystem->delete($proper_destination, true);
+        error_log('[ErrorVault Updater] After install - Current destination: ' . $result['destination']);
+        error_log('[ErrorVault Updater] After install - Proper destination: ' . $proper_destination);
+        
+        // If the destination is already correct (from our properly named ZIP), we're done
+        if ($result['destination'] === $proper_destination) {
+            error_log('[ErrorVault Updater] Destination already correct, no rename needed');
+            return $result;
         }
+        
+        // Otherwise, we need to rename the folder
+        // This handles GitHub's zipball format (repo-name-tag) if used as fallback
+        if ($wp_filesystem->exists($result['destination'])) {
+            error_log('[ErrorVault Updater] Renaming folder from: ' . basename($result['destination']));
+            
+            // Remove old plugin folder if it exists
+            if ($wp_filesystem->exists($proper_destination)) {
+                error_log('[ErrorVault Updater] Removing old plugin folder');
+                $wp_filesystem->delete($proper_destination, true);
+            }
 
-        // Move the extracted folder to the correct location
-        $wp_filesystem->move($result['destination'], $proper_destination);
-        $result['destination'] = $proper_destination;
+            // Move the extracted folder to the correct location
+            $move_result = $wp_filesystem->move($result['destination'], $proper_destination);
+            
+            if ($move_result) {
+                error_log('[ErrorVault Updater] Successfully renamed to: errorvault-wordpress');
+                $result['destination'] = $proper_destination;
+                $result['destination_name'] = 'errorvault-wordpress';
+            } else {
+                error_log('[ErrorVault Updater] ERROR: Failed to rename folder');
+            }
+        }
 
         return $result;
     }

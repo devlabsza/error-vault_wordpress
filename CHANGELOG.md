@@ -2,6 +2,31 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.4.3] - 2026-02-26
+
+### Fixed
+- **GitHub Auto-Update Installation Issues**
+  - Fixed plugin slug handling to use hardcoded 'errorvault-wordpress' instead of dynamic dirname()
+  - Added 'plugin' field to update data for proper WordPress plugin identification
+  - Strip 'v' prefix from version tags for proper version comparison
+  - Improved after_install hook to handle both release assets and zipball formats
+  - Fixed folder renaming logic to properly handle extracted plugin directory
+
+### Added
+- **Debug Logging for Updates**
+  - Log when release asset is found vs zipball fallback
+  - Log version comparison (current -> new)
+  - Log folder renaming operations in after_install
+  - Log success/failure of folder move operations
+  - Helps troubleshoot update installation issues
+
+### Changed
+- Version comparison now strips 'v' prefix from GitHub tags (v1.4.3 -> 1.4.3)
+- Plugin info now uses release asset URL instead of always using zipball
+- Improved error handling in after_install with detailed logging
+
+---
+
 ## [1.4.2] - 2026-02-25
 
 ### Fixed
