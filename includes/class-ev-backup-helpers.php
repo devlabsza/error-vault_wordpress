@@ -111,7 +111,7 @@ class EV_Backup_Helpers {
         );
 
         $settings = get_option('errorvault_settings', array());
-        if (!empty($settings['api_endpoint']) && !empty($settings['api_token'])) {
+        if (!empty($settings['api_token'])) {
             $requirements['api_configured'] = true;
         }
 

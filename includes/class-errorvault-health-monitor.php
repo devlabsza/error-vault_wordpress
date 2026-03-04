@@ -70,7 +70,6 @@ class ErrorVault_Health_Monitor {
      */
     public function is_enabled() {
         return !empty($this->settings['health_monitoring_enabled'])
-            && !empty($this->settings['api_endpoint'])
             && !empty($this->settings['api_token']);
     }
 
@@ -648,8 +647,8 @@ class ErrorVault_Health_Monitor {
         // Refresh settings
         $this->settings = get_option('errorvault_settings', array());
 
-        if (empty($this->settings['api_endpoint']) || empty($this->settings['api_token'])) {
-            wp_send_json_error('API endpoint and token are required.');
+        if (empty($this->settings['api_token'])) {
+            wp_send_json_error('API token is required.');
         }
 
         // Test ping
@@ -689,8 +688,8 @@ class ErrorVault_Health_Monitor {
             wp_send_json_error('Health monitoring is not enabled. Please enable it and save settings first.');
         }
 
-        if (empty($this->settings['api_endpoint']) || empty($this->settings['api_token'])) {
-            wp_send_json_error('API endpoint and token are required.');
+        if (empty($this->settings['api_token'])) {
+            wp_send_json_error('API token is required.');
         }
 
         // Get health data

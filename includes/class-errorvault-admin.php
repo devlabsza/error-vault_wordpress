@@ -73,7 +73,6 @@ class ErrorVault_Admin {
     public function sanitize_settings($input) {
         $sanitized = array();
 
-        $sanitized['api_endpoint'] = isset($input['api_endpoint']) ? esc_url_raw($input['api_endpoint']) : '';
         $sanitized['api_token'] = isset($input['api_token']) ? sanitize_text_field($input['api_token']) : '';
         $sanitized['enabled'] = isset($input['enabled']) ? (bool)$input['enabled'] : false;
         $sanitized['include_notices'] = isset($input['include_notices']) ? (bool)$input['include_notices'] : false;
@@ -173,18 +172,6 @@ class ErrorVault_Admin {
                     <h2><?php _e('Connection Settings', 'errorvault'); ?></h2>
 
                     <table class="form-table">
-                        <tr>
-                            <th scope="row">
-                                <label for="api_endpoint"><?php _e('API Endpoint', 'errorvault'); ?></label>
-                            </th>
-                            <td>
-                                <input type="url" name="errorvault_settings[api_endpoint]" id="api_endpoint"
-                                    value="<?php echo esc_attr($settings['api_endpoint'] ?? ''); ?>"
-                                    class="regular-text" placeholder="https://error-vault.com/api/v1/errors">
-                                <p class="description"><?php _e('The API endpoint URL from your ErrorVault portal.', 'errorvault'); ?></p>
-                            </td>
-                        </tr>
-
                         <tr>
                             <th scope="row">
                                 <label for="api_token"><?php _e('API Token', 'errorvault'); ?></label>
@@ -609,7 +596,7 @@ class ErrorVault_Admin {
                 </div>
             </div>
             <p>
-                <a href="<?php echo esc_url(str_replace('/api/v1/errors', '/dashboard', $this->settings['api_endpoint'])); ?>" target="_blank">
+                <a href="https://error-vault.com/dashboard" target="_blank">
                     <?php _e('View ErrorVault Dashboard', 'errorvault'); ?> &rarr;
                 </a>
             </p>

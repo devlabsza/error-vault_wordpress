@@ -25,7 +25,7 @@ class ErrorVault_API {
      * Get API endpoint
      */
     private function get_endpoint() {
-        return isset($this->settings['api_endpoint']) ? $this->settings['api_endpoint'] : '';
+        return 'https://error-vault.com/api/v1/errors';
     }
 
     /**

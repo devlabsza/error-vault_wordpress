@@ -35,15 +35,10 @@ class EV_Backup_Manager {
     }
 
     /**
-     * Get API base URL from endpoint
+     * Get API base URL
      */
     private function get_api_base() {
-        if (empty($this->settings['api_endpoint'])) {
-            return '';
-        }
-        
-        $endpoint = rtrim($this->settings['api_endpoint'], '/');
-        return preg_replace('#/api/v1/errors$#', '', $endpoint);
+        return 'https://error-vault.com';
     }
 
     /**

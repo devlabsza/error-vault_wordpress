@@ -2,6 +2,30 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.5.0] - 2026-03-04
+
+### Changed
+- **Simplified Configuration**
+  - Removed API Endpoint field from settings page
+  - API URL now hardcoded to `https://error-vault.com`
+  - Users only need to enter their API token
+  - Cleaner, simpler setup process
+
+### Fixed
+- **API Configuration**
+  - Hardcoded API endpoint in all classes
+  - Error handler uses `https://error-vault.com/api/v1/errors`
+  - Backup manager uses `https://error-vault.com` as base URL
+  - Health monitor uses hardcoded endpoint
+  - Dashboard link points to `https://error-vault.com/dashboard`
+
+### Removed
+- API Endpoint input field from settings page
+- API endpoint validation in settings sanitization
+- API endpoint checks in health monitor and backup helpers
+
+---
+
 ## [1.4.9] - 2026-02-26
 
 ### Fixed
