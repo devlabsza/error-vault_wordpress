@@ -3,7 +3,7 @@
  * Plugin Name: ErrorVault
  * Plugin URI: https://error-vault.com
  * Description: Send PHP errors to your ErrorVault dashboard for centralized error monitoring.
- * Version: 1.5.0
+ * Version: 1.5.1
  * Author: ErrorVault
  * Author URI: https://error-vault.com
  * License: GPL v2 or later
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('ERRORVAULT_VERSION', '1.5.0');
+define('ERRORVAULT_VERSION', '1.5.1');
 define('ERRORVAULT_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ERRORVAULT_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ERRORVAULT_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -68,18 +68,15 @@ add_filter('cron_schedules', function($schedules) {
  */
 add_action('errorvault_heartbeat', function() {
     $settings = get_option('errorvault_settings', array());
-    
-    // Only send if health monitoring is enabled
-    if (empty($settings['health_monitoring_enabled']) || empty($settings['api_endpoint']) || empty($settings['api_token'])) {
+
+    if (empty($settings['health_monitoring_enabled']) || empty($settings['api_token'])) {
         return;
     }
-    
-    $api_endpoint = str_replace('/errors', '/ping', rtrim($settings['api_endpoint'], '/'));
-    
-    wp_remote_post($api_endpoint, array(
+
+    wp_remote_post('https://error-vault.com/api/v1/ping', array(
         'headers' => array('X-API-Token' => $settings['api_token']),
         'timeout' => 5,
-        'blocking' => false, // Non-blocking for performance
+        'blocking' => false,
     ));
 });
 
@@ -93,7 +90,6 @@ if (!wp_next_scheduled('errorvault_heartbeat')) {
 function errorvault_activate() {
     // Set default options
     $defaults = array(
-        'api_endpoint' => 'https://your-errorvault-portal.com/api/v1/errors',
         'api_token' => '',
         'enabled' => false,
         'log_levels' => array('error', 'critical', 'fatal'),

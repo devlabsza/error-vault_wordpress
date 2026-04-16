@@ -2,6 +2,13 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.5.1] - 2026-04-16
+
+### Fixed
+- **Verify Connection button** — no longer errors with "Please enter both endpoint and token." The removed endpoint field is no longer required; button now validates the API token only.
+- **Health monitoring heartbeat** — was silently disabled on new installs because it still checked for the removed `api_endpoint` setting. Now posts directly to the hardcoded `https://error-vault.com/api/v1/ping`.
+- Removed stale `api_endpoint` default from activation hook.
+
 ## [1.5.0] - 2026-03-04
 
 ### Changed

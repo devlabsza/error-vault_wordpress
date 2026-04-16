@@ -11,12 +11,11 @@
         $('#verify-token').on('click', function() {
             var $button = $(this);
             var $result = $('#verify-result');
-            var endpoint = $('#api_endpoint').val();
             var token = $('#api_token').val();
 
-            if (!endpoint || !token) {
+            if (!token) {
                 $result.removeClass('success').addClass('error')
-                    .text('Please enter both endpoint and token.');
+                    .text('Please enter your API token.');
                 return;
             }
 
@@ -29,7 +28,6 @@
                 data: {
                     action: 'errorvault_verify_token',
                     nonce: errorvaultAdmin.nonce,
-                    endpoint: endpoint,
                     token: token
                 },
                 success: function(response) {
