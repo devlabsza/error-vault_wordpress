@@ -53,9 +53,13 @@ class ErrorVault_Updater {
         add_filter('pre_set_site_transient_update_plugins', array($this, 'check_for_update'));
         add_filter('plugins_api', array($this, 'plugin_info'), 10, 3);
         add_filter('upgrader_post_install', array($this, 'after_install'), 10, 3);
-        
+
         // Preserve plugin activation state after update
         add_filter('upgrader_clear_destination', array($this, 'clear_destination'), 10, 4);
+
+        // Surface update failures in the admin so they don't fail silently
+        add_action('admin_notices', array($this, 'display_update_error'));
+        add_action('admin_init', array($this, 'maybe_dismiss_update_error'));
     }
 
     /**
@@ -169,53 +173,109 @@ class ErrorVault_Updater {
 
     /**
      * After plugin installation
-     * Handles proper plugin folder naming after extraction
+     * Handles proper plugin folder naming after extraction.
+     * When the zipball fallback is used the existing folder must be replaced —
+     * we back it up first so a failed rename doesn't leave the user with no plugin.
      */
     public function after_install($response, $hook_extra, $result) {
         global $wp_filesystem;
 
-        // Only handle our plugin
         if (!isset($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_slug) {
             return $result;
         }
 
         $proper_destination = WP_PLUGIN_DIR . '/errorvault-wordpress';
-        
+
         error_log('[ErrorVault Updater] After install - Current destination: ' . $result['destination']);
         error_log('[ErrorVault Updater] After install - Proper destination: ' . $proper_destination);
-        error_log('[ErrorVault Updater] After install - Plugin: ' . $hook_extra['plugin']);
-        
-        // If the destination is already correct (from our properly named ZIP), we're done
+
+        // Properly named asset extracted straight into place — nothing to do.
         if ($result['destination'] === $proper_destination) {
-            error_log('[ErrorVault Updater] Destination already correct, no rename needed');
             $result['destination_name'] = 'errorvault-wordpress';
             return $result;
         }
-        
-        // Otherwise, we need to rename the folder
-        // This handles GitHub's zipball format (repo-name-tag) if used as fallback
-        if ($wp_filesystem->exists($result['destination'])) {
-            error_log('[ErrorVault Updater] Renaming folder from: ' . basename($result['destination']));
-            
-            // Remove old plugin folder if it exists
-            if ($wp_filesystem->exists($proper_destination)) {
-                error_log('[ErrorVault Updater] Removing old plugin folder');
-                $wp_filesystem->delete($proper_destination, true);
-            }
 
-            // Move the extracted folder to the correct location
-            $move_result = $wp_filesystem->move($result['destination'], $proper_destination);
-            
-            if ($move_result) {
-                error_log('[ErrorVault Updater] Successfully renamed to: errorvault-wordpress');
-                $result['destination'] = $proper_destination;
-                $result['destination_name'] = 'errorvault-wordpress';
-            } else {
-                error_log('[ErrorVault Updater] ERROR: Failed to rename folder');
-            }
+        if (!$wp_filesystem->exists($result['destination'])) {
+            $this->store_update_error('Extracted update folder was not found on disk.');
+            return new WP_Error('ev_missing_source', __('ErrorVault update failed: extracted folder is missing.', 'errorvault'));
         }
 
-        return $result;
+        // Move the existing folder aside first so we can roll back if the rename fails.
+        $backup_destination = $proper_destination . '.backup-' . time();
+        $backup_created = false;
+
+        if ($wp_filesystem->exists($proper_destination)) {
+            if (!$wp_filesystem->move($proper_destination, $backup_destination)) {
+                $this->store_update_error('Could not back up the existing plugin folder before update. No changes applied.');
+                return new WP_Error('ev_backup_failed', __('ErrorVault update failed: could not back up the existing plugin folder.', 'errorvault'));
+            }
+            $backup_created = true;
+        }
+
+        if ($wp_filesystem->move($result['destination'], $proper_destination)) {
+            if ($backup_created) {
+                $wp_filesystem->delete($backup_destination, true);
+            }
+            $result['destination'] = $proper_destination;
+            $result['destination_name'] = 'errorvault-wordpress';
+            return $result;
+        }
+
+        // Rename failed — try to restore the previous version so the plugin doesn't vanish.
+        if ($backup_created && $wp_filesystem->move($backup_destination, $proper_destination)) {
+            $this->store_update_error('Update could not be installed. The previous version was restored.');
+        } else {
+            $this->store_update_error('Update failed and the previous version could not be restored. Reinstall the plugin manually.');
+        }
+
+        return new WP_Error('ev_install_failed', __('ErrorVault update failed. See PHP error log for details.', 'errorvault'));
+    }
+
+    /**
+     * Record an update failure so the admin sees it instead of the plugin silently disappearing.
+     */
+    private function store_update_error($message) {
+        error_log('[ErrorVault Updater] ' . $message);
+        set_transient('errorvault_update_error', $message, DAY_IN_SECONDS);
+    }
+
+    /**
+     * Render a dismissible admin notice if the last update failed.
+     */
+    public function display_update_error() {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        $message = get_transient('errorvault_update_error');
+        if (!$message) {
+            return;
+        }
+
+        $dismiss_url = wp_nonce_url(add_query_arg('errorvault_dismiss_update_error', '1'), 'errorvault_dismiss_update_error');
+        printf(
+            '<div class="notice notice-error"><p><strong>ErrorVault:</strong> %s <a href="%s" style="margin-left:10px;">Dismiss</a></p></div>',
+            esc_html($message),
+            esc_url($dismiss_url)
+        );
+    }
+
+    /**
+     * Clear the stored update error when the admin dismisses the notice.
+     */
+    public function maybe_dismiss_update_error() {
+        if (!isset($_GET['errorvault_dismiss_update_error'])) {
+            return;
+        }
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+        check_admin_referer('errorvault_dismiss_update_error');
+
+        delete_transient('errorvault_update_error');
+
+        wp_safe_redirect(remove_query_arg(array('errorvault_dismiss_update_error', '_wpnonce')));
+        exit;
     }
 
     /**

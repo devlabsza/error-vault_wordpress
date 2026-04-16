@@ -2,6 +2,12 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.5.2] - 2026-04-16
+
+### Fixed
+- **Plugin could disappear after a failed update.** The zipball-fallback path in the updater deleted the old plugin folder before moving the new one into place — if the move failed (permissions, disk, filesystem quirk), the plugin was gone. The updater now moves the old folder to a backup location, attempts the rename, and restores the backup if the rename fails.
+- Update failures are now surfaced as a dismissible admin notice instead of only appearing in `error_log`.
+
 ## [1.5.1] - 2026-04-16
 
 ### Fixed
