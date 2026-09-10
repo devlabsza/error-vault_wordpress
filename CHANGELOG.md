@@ -2,6 +2,18 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.6.0] - 2026-09-10
+
+### Added
+- **On-site security scan**, reported to your ErrorVault dashboard. It runs every 24 hours, or on demand from the portal or the plugin settings page. It checks:
+  - WordPress core files against the official WordPress.org checksums, including unknown PHP files in `wp-admin`, `wp-includes` and the site root
+  - Administrator accounts, read directly from the database so malware that hides users from the Users screen is caught, with last login time and IP
+  - Plugins against WordPress.org plugin checksums, for modified or extra files, plus PHP folders in `wp-content/plugins` that aren't real plugins
+  - Webshell and backdoor signatures, known wp2shell malware file hashes and `fun-<hex>` / `fun-proof-<hex>` attacker folders
+  - PHP files and PHP-enabling `.htaccess` files in uploads, `auto_prepend_file` persistence, tampered `wp-config.php`, open registration as an admin role, and disabled core auto-updates
+- **wp2shell protection (CVE-2026-63030 / CVE-2026-60137).** On affected WordPress versions (6.9.0–6.9.4, 7.0.0–7.0.1), anonymous requests to the REST batch endpoint are blocked and an admin notice urges an immediate update. Disable with `add_filter('errorvault_wp2shell_virtual_patch', '__return_false');`.
+- Records last login time and IP for administrators, shown in the ErrorVault security report.
+
 ## [1.5.2] - 2026-04-16
 
 ### Fixed

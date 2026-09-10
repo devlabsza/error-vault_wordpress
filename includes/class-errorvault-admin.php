@@ -141,6 +141,8 @@ class ErrorVault_Admin {
                 'loadingLogs' => __('Loading logs...', 'errorvault'),
                 'clearingLogs' => __('Clearing logs...', 'errorvault'),
                 'logsCleared' => __('Logs cleared successfully', 'errorvault'),
+                'startingScan' => __('Starting security scan...', 'errorvault'),
+                'scanFailed' => __('Could not start the security scan', 'errorvault'),
             ),
         ));
     }
@@ -524,6 +526,71 @@ class ErrorVault_Admin {
                         <div id="backup-logs-content" style="background: #f5f5f5; padding: 15px; border-radius: 4px; max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px; white-space: pre-wrap;">
                             <?php _e('Loading...', 'errorvault'); ?>
                         </div>
+                    </div>
+                </div>
+
+                <div class="errorvault-card">
+                    <h2><?php _e('Security Scan', 'errorvault'); ?></h2>
+                    <p class="description" style="margin-bottom: 15px;">
+                        <?php _e('Checks core files against WordPress.org, looks for rogue administrators, malicious plugins, webshells and backdoors, and reports the results to ErrorVault. Runs automatically every 24 hours.', 'errorvault'); ?>
+                    </p>
+
+                    <?php
+                    $last_scan = ErrorVault_Security_Scanner::get_last_scan();
+                    $status_labels = array(
+                        'clean' => array(__('Clean', 'errorvault'), '#46b450'),
+                        'at_risk' => array(__('At risk', 'errorvault'), '#f0b849'),
+                        'suspicious' => array(__('Suspicious', 'errorvault'), '#e67e22'),
+                        'compromised' => array(__('Compromised', 'errorvault'), '#dc3232'),
+                    );
+                    ?>
+                    <table class="widefat" style="margin-bottom: 15px;">
+                        <tbody>
+                            <tr>
+                                <td style="font-weight: 600; width: 200px;"><?php _e('Last Scan', 'errorvault'); ?></td>
+                                <td>
+                                    <?php if (!empty($last_scan['time'])): ?>
+                                        <?php echo esc_html(sprintf(__('%s ago', 'errorvault'), human_time_diff($last_scan['time']))); ?>
+                                    <?php else: ?>
+                                        <span style="color: #999;"><?php _e('Not yet', 'errorvault'); ?></span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="font-weight: 600;"><?php _e('Result', 'errorvault'); ?></td>
+                                <td>
+                                    <?php if (!empty($last_scan['error'])): ?>
+                                        <span style="color: #dc3232;"><?php echo esc_html(sprintf(__('Failed: %s', 'errorvault'), $last_scan['error'])); ?></span>
+                                    <?php elseif (!empty($last_scan['status']) && isset($status_labels[$last_scan['status']])): ?>
+                                        <strong style="color: <?php echo esc_attr($status_labels[$last_scan['status']][1]); ?>;"><?php echo esc_html($status_labels[$last_scan['status']][0]); ?></strong>
+                                        <?php if (!empty($last_scan['url'])): ?>
+                                            &nbsp;<a href="<?php echo esc_url($last_scan['url']); ?>" target="_blank" rel="noopener"><?php _e('View report in ErrorVault', 'errorvault'); ?> &rarr;</a>
+                                        <?php endif; ?>
+                                    <?php else: ?>
+                                        <span style="color: #999;">—</span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="font-weight: 600;"><?php _e('wp2shell Protection', 'errorvault'); ?></td>
+                                <td>
+                                    <?php if (ErrorVault_Security_Scanner::virtual_patch_active()): ?>
+                                        <span style="color: #f0b849;">⚠ <?php _e('Your WordPress version is vulnerable. Anonymous REST batch requests are being blocked. Update WordPress now.', 'errorvault'); ?></span>
+                                    <?php elseif (ErrorVault_Security_Scanner::is_wp2shell_vulnerable()): ?>
+                                        <span style="color: #dc3232;">✗ <?php _e('Your WordPress version is vulnerable and the virtual patch is disabled. Update WordPress now.', 'errorvault'); ?></span>
+                                    <?php else: ?>
+                                        <span style="color: #46b450;">✓ <?php _e('This WordPress version is not affected', 'errorvault'); ?></span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <button type="button" id="run-security-scan" class="button button-secondary">
+                            <?php _e('Run Security Scan Now', 'errorvault'); ?>
+                        </button>
+                        <span id="security-scan-result"></span>
                     </div>
                 </div>
 

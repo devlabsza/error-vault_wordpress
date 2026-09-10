@@ -184,6 +184,29 @@
         });
 
         // Trigger backup poll button
+        $('#run-security-scan').on('click', function() {
+            var $button = $(this);
+            var $result = $('#security-scan-result');
+
+            $button.prop('disabled', true);
+            $result.removeClass('success error').html('<span class="errorvault-spinner"></span> ' + errorvaultAdmin.strings.startingScan);
+
+            $.post(errorvaultAdmin.ajaxUrl, {
+                action: 'errorvault_run_security_scan',
+                nonce: errorvaultAdmin.nonce
+            }).done(function(response) {
+                if (response.success) {
+                    $result.removeClass('error').addClass('success').text(response.data);
+                } else {
+                    $button.prop('disabled', false);
+                    $result.removeClass('success').addClass('error').text(response.data);
+                }
+            }).fail(function() {
+                $button.prop('disabled', false);
+                $result.removeClass('success').addClass('error').text(errorvaultAdmin.strings.scanFailed);
+            });
+        });
+
         $('#trigger-backup-poll').on('click', function() {
             var $button = $(this);
             var $result = $('#backup-result');
