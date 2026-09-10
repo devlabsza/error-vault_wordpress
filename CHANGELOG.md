@@ -2,6 +2,14 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.7.1] - 2026-09-10
+
+### Fixed
+- **New releases can show up late.** The updater cached GitHub's latest release for 12 hours, and nothing cleared it, so even **Dashboard → Updates → Check again** kept reporting the old version. Now:
+  - "Check again" clears the cache and really re-checks GitHub.
+  - Sites that are already up to date re-check hourly instead of every 12 hours.
+  - The cache is cleared after any update completes.
+
 ## [1.7.0] - 2026-09-10
 
 ### Added

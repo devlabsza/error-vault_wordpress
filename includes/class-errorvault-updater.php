@@ -60,6 +60,20 @@ class ErrorVault_Updater {
         // Surface update failures in the admin so they don't fail silently
         add_action('admin_notices', array($this, 'display_update_error'));
         add_action('admin_init', array($this, 'maybe_dismiss_update_error'));
+
+        // "Check again" on Dashboard > Updates must really re-ask GitHub. Priority 1 so the
+        // cache is gone before core's wp_update_plugins() runs on the same hook.
+        add_action('load-update-core.php', array($this, 'maybe_force_check'), 1);
+        add_action('upgrader_process_complete', array($this, 'clear_cache'), 10, 0);
+    }
+
+    /**
+     * Drop the cached GitHub release when an admin clicks "Check again".
+     */
+    public function maybe_force_check() {
+        if (!empty($_GET['force-check']) && current_user_can('update_plugins')) {
+            $this->clear_cache();
+        }
     }
 
     /**
@@ -325,8 +339,10 @@ class ErrorVault_Updater {
             return false;
         }
 
-        // Cache for 12 hours
-        set_transient($transient_key, $release, 12 * HOUR_IN_SECONDS);
+        // Once an update is known there's no need to ask again for a while; when we're
+        // already current, re-check hourly so new releases show up quickly.
+        $update_known = version_compare($this->version, ltrim($release->tag_name, 'v'), '<');
+        set_transient($transient_key, $release, $update_known ? 12 * HOUR_IN_SECONDS : HOUR_IN_SECONDS);
 
         return $release;
     }
