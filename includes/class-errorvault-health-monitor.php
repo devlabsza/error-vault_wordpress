@@ -1,6 +1,6 @@
 <?php
 /**
- * Health Monitor class for ErrorVault
+ * Health Monitor class for Error-Vault
  * Monitors server health and detects potential issues like DDoS, CPU overload, memory pressure
  */
 
@@ -322,7 +322,7 @@ class ErrorVault_Health_Monitor {
     }
 
     /**
-     * Send health alerts to ErrorVault
+     * Send health alerts to Error-Vault
      */
     private function send_health_alerts($alerts) {
         // Rate limit alerts (max 1 per type per 5 minutes)
@@ -656,7 +656,7 @@ class ErrorVault_Health_Monitor {
 
         if ($ping_result) {
             wp_send_json_success(array(
-                'message' => 'Connection successful! Your site is communicating with ErrorVault.',
+                'message' => 'Connection successful! Your site is communicating with Error-Vault.',
                 'timestamp' => current_time('mysql'),
             ));
         } else {

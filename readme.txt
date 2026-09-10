@@ -1,22 +1,22 @@
-=== ErrorVault ===
+=== Error-Vault ===
 Contributors: errorvault
 Tags: error logging, debugging, error monitoring, php errors, developer tools, server health
 Requires at least: 5.0
 Tested up to: 6.4
 Requires PHP: 7.4
-Stable tag: 1.7.1
+Stable tag: 1.7.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Send PHP errors to your centralized ErrorVault dashboard for easy monitoring across all your WordPress sites.
+Send PHP errors to your centralized Error-Vault dashboard for easy monitoring across all your WordPress sites.
 
 == Description ==
 
-ErrorVault is a centralized error monitoring solution for WordPress. Instead of hunting through server log files, all your PHP errors, warnings, and notices are automatically sent to your ErrorVault dashboard.
+Error-Vault is a centralized error monitoring solution for WordPress. Instead of hunting through server log files, all your PHP errors, warnings, and notices are automatically sent to your Error-Vault dashboard.
 
 **Features:**
 
-* Real-time error logging to your ErrorVault portal
+* Real-time error logging to your Error-Vault portal
 * Automatic grouping of identical errors
 * Full stack traces for easy debugging
 * Configurable severity levels (notices, warnings, errors, critical, fatal)
@@ -27,7 +27,7 @@ ErrorVault is a centralized error monitoring solution for WordPress. Instead of 
 
 **How It Works:**
 
-1. Create an account at your ErrorVault portal
+1. Create an account at your Error-Vault portal
 2. Add your WordPress site and get an API token
 3. Install this plugin and enter your API endpoint and token
 4. Errors are automatically sent to your dashboard!
@@ -38,7 +38,7 @@ ErrorVault is a centralized error monitoring solution for WordPress. Instead of 
 1. Go to Plugins > Add New > Upload Plugin
 2. Choose the plugin zip file and click "Install Now"
 3. Activate the plugin
-4. Go to Settings > ErrorVault to configure your API endpoint and token
+4. Go to Settings > Error-Vault to configure your API endpoint and token
 5. Click "Verify Connection" to test the connection
 6. Enable logging and save settings
 
@@ -48,7 +48,7 @@ ErrorVault is a centralized error monitoring solution for WordPress. Instead of 
 3. **Important:** Rename the extracted folder to `errorvault-wordpress` (GitHub names it as `error-vault_wordpress-X.X.X`)
 4. Upload the `errorvault-wordpress` folder to `/wp-content/plugins/`
 5. Activate the plugin through the 'Plugins' menu in WordPress
-6. Go to Settings > ErrorVault to configure your API endpoint and token
+6. Go to Settings > Error-Vault to configure your API endpoint and token
 7. Click "Verify Connection" to test the connection
 8. Enable logging and save settings
 
@@ -70,7 +70,7 @@ Yes! In the settings, you can add exclude patterns. Any error message containing
 
 = Where do I get my API token? =
 
-Log in to your ErrorVault portal, add your site, and the API token will be displayed in the site settings.
+Log in to your Error-Vault portal, add your site, and the API token will be displayed in the site settings.
 
 == Changelog ==
 
@@ -117,7 +117,7 @@ Log in to your ErrorVault portal, add your site, and the API token will be displ
 
 = 1.0.0 =
 * Initial release
-* Real-time error logging to ErrorVault portal
+* Real-time error logging to Error-Vault portal
 * Automatic error grouping
 * Full stack traces
 * Configurable severity levels
@@ -140,4 +140,4 @@ Enhanced health monitoring with URL tracking during traffic spikes and attacks.
 Server health monitoring added! Track CPU, memory, disk usage, and detect potential DDoS attacks.
 
 = 1.0.0 =
-Initial release of ErrorVault for WordPress.
+Initial release of Error-Vault for WordPress.

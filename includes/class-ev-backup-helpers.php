@@ -1,6 +1,6 @@
 <?php
 /**
- * Backup Helper Functions for ErrorVault
+ * Backup Helper Functions for Error-Vault
  * Utility functions for backup operations and diagnostics
  */
 

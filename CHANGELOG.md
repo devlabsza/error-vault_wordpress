@@ -2,6 +2,15 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.7.2] - 2026-09-10
+
+### Changed
+- Renamed to **Error-Vault** everywhere in WordPress (plugin name, Settings menu, page title, notices, dashboard widget) to match error-vault.com. Internal identifiers (plugin folder, option names, text domain) are unchanged, so existing installs update normally.
+- Activating the plugin now takes you straight to **Settings → Error-Vault** to enter your API token.
+
+### Fixed
+- The plugin info "author" link pointed at errorvault.com instead of error-vault.com.
+
 ## [1.7.1] - 2026-09-10
 
 ### Fixed

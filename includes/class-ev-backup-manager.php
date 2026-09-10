@@ -1,6 +1,6 @@
 <?php
 /**
- * Backup Manager for ErrorVault
+ * Backup Manager for Error-Vault
  * Handles polling for pending backups and executing backup operations
  */
 

@@ -1,6 +1,6 @@
 <?php
 /**
- * API class for ErrorVault
+ * API class for Error-Vault
  */
 
 if (!defined('ABSPATH')) {
@@ -369,12 +369,12 @@ class ErrorVault_API {
         $failures = $this->get_connection_failures();
         $recent = array_slice($failures, -5);
 
-        $message = "ErrorVault plugin on {$site_name} has experienced repeated connection failures.\n\n";
+        $message = "Error-Vault plugin on {$site_name} has experienced repeated connection failures.\n\n";
         $message .= "Recent failures:\n";
         foreach ($recent as $failure) {
             $message .= "- {$failure['timestamp']}: {$failure['type']} - {$failure['message']}\n";
         }
-        $message .= "\nPlease check your ErrorVault settings and API endpoint.\n";
+        $message .= "\nPlease check your Error-Vault settings and API endpoint.\n";
         $message .= "Settings: " . admin_url('options-general.php?page=errorvault');
 
         wp_mail(

@@ -1,9 +1,9 @@
 <?php
 /**
- * On-site security scanner for ErrorVault.
+ * On-site security scanner for Error-Vault.
  *
  * Collects what only code running inside WordPress can see and reports it to
- * the ErrorVault portal, which does the final analysis:
+ * the Error-Vault portal, which does the final analysis:
  *
  *  - core files vs the official WordPress.org checksums
  *  - administrator accounts, read straight from the database so malware that
@@ -138,14 +138,14 @@ class ErrorVault_Security_Scanner {
             return;
         }
 
-        echo '<div class="notice notice-error"><p><strong>' . esc_html__('ErrorVault security warning:', 'errorvault') . '</strong> ';
+        echo '<div class="notice notice-error"><p><strong>' . esc_html__('Error-Vault security warning:', 'errorvault') . '</strong> ';
         printf(
             /* translators: %s: WordPress version */
             esc_html__('WordPress %s is affected by wp2shell (CVE-2026-63030), a vulnerability that is being actively exploited to take over sites. Update WordPress now.', 'errorvault'),
             esc_html(get_bloginfo('version'))
         );
         if (self::virtual_patch_active()) {
-            echo ' ' . esc_html__('Until then, ErrorVault is blocking anonymous requests to the REST batch endpoint.', 'errorvault');
+            echo ' ' . esc_html__('Until then, Error-Vault is blocking anonymous requests to the REST batch endpoint.', 'errorvault');
         }
         echo ' <a href="' . esc_url(admin_url('update-core.php')) . '">' . esc_html__('Go to updates', 'errorvault') . '</a></p></div>';
     }
@@ -278,7 +278,7 @@ class ErrorVault_Security_Scanner {
         wp_schedule_single_event(time(), self::RUN_NOW_HOOK);
         spawn_cron();
 
-        wp_send_json_success(__('Security scan started. Results appear in ErrorVault in a few minutes.', 'errorvault'));
+        wp_send_json_success(__('Security scan started. Results appear in Error-Vault in a few minutes.', 'errorvault'));
     }
 
     public static function run_and_report($iocs = array(), $trigger = 'manual') {
@@ -1204,7 +1204,7 @@ class ErrorVault_Security_Scanner {
             $paths = wp_list_pluck($this->signature_hits['warning'], 'path');
             $this->add_finding('files:suspicious:' . md5(implode('|', $paths)), 'files', 'Suspicious code patterns', 'warning', true,
                 sprintf('%d file(s) contain obfuscated or unusual code that is common in malware but can be legitimate.', count($paths)),
-                'Review each file. If it belongs to a premium plugin or theme you trust, mark it as recognised in ErrorVault.',
+                'Review each file. If it belongs to a premium plugin or theme you trust, mark it as recognised in Error-Vault.',
                 array('files' => $this->signature_hits['warning']));
             $this->mark_trustable_last($paths);
         }

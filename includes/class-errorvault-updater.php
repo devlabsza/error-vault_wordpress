@@ -1,6 +1,6 @@
 <?php
 /**
- * GitHub Updater for ErrorVault Plugin
+ * GitHub Updater for Error-Vault Plugin
  * Checks for updates from GitHub releases
  */
 
@@ -141,10 +141,10 @@ class ErrorVault_Updater {
         }
 
         $plugin_info = array(
-            'name' => 'ErrorVault',
+            'name' => 'Error-Vault',
             'slug' => 'errorvault-wordpress',
             'version' => ltrim($release->tag_name, 'v'),
-            'author' => '<a href="https://errorvault.com">ErrorVault</a>',
+            'author' => '<a href="https://error-vault.com">Error-Vault</a>',
             'homepage' => "https://github.com/{$this->github_user}/{$this->github_repo}",
             'requires' => '5.8',
             'tested' => '6.4',
@@ -211,7 +211,7 @@ class ErrorVault_Updater {
 
         if (!$wp_filesystem->exists($result['destination'])) {
             $this->store_update_error('Extracted update folder was not found on disk.');
-            return new WP_Error('ev_missing_source', __('ErrorVault update failed: extracted folder is missing.', 'errorvault'));
+            return new WP_Error('ev_missing_source', __('Error-Vault update failed: extracted folder is missing.', 'errorvault'));
         }
 
         // Move the existing folder aside first so we can roll back if the rename fails.
@@ -221,7 +221,7 @@ class ErrorVault_Updater {
         if ($wp_filesystem->exists($proper_destination)) {
             if (!$wp_filesystem->move($proper_destination, $backup_destination)) {
                 $this->store_update_error('Could not back up the existing plugin folder before update. No changes applied.');
-                return new WP_Error('ev_backup_failed', __('ErrorVault update failed: could not back up the existing plugin folder.', 'errorvault'));
+                return new WP_Error('ev_backup_failed', __('Error-Vault update failed: could not back up the existing plugin folder.', 'errorvault'));
             }
             $backup_created = true;
         }
@@ -242,7 +242,7 @@ class ErrorVault_Updater {
             $this->store_update_error('Update failed and the previous version could not be restored. Reinstall the plugin manually.');
         }
 
-        return new WP_Error('ev_install_failed', __('ErrorVault update failed. See PHP error log for details.', 'errorvault'));
+        return new WP_Error('ev_install_failed', __('Error-Vault update failed. See PHP error log for details.', 'errorvault'));
     }
 
     /**
@@ -352,7 +352,7 @@ class ErrorVault_Updater {
      */
     private function parse_markdown_description($markdown) {
         if (empty($markdown)) {
-            return 'ErrorVault WordPress plugin for centralized error monitoring and server health tracking.';
+            return 'Error-Vault WordPress plugin for centralized error monitoring and server health tracking.';
         }
 
         // Simple markdown to HTML conversion

@@ -1,20 +1,20 @@
 <?php
 /**
- * Cleanup actions queued from the ErrorVault portal.
+ * Cleanup actions queued from the Error-Vault portal.
  *
  * The portal can only ask for a fixed set of actions, and every action is
  * re-checked here against local rules before anything changes:
  *
  *  - quarantine_path / remove_plugin: files are copied (folders zipped) into a
  *    non-executable quarantine and can be restored; never deleted outright.
- *    wp-config.php, genuine core files, the active theme, ErrorVault itself
+ *    wp-config.php, genuine core files, the active theme, Error-Vault itself
  *    and anything outside the WordPress install are refused.
  *  - reinstall_plugin / update_core: packages only ever come from WordPress.org.
  *  - delete_admin: content is reassigned; the last administrator can't be removed.
  *  - rotate_salts / logout_all: sign everyone out, including an attacker.
  *
  * Nothing sent by the portal is ever written to disk or executed as code.
- * Site owners can turn remote actions off in Settings, ErrorVault, or with
+ * Site owners can turn remote actions off in Settings, Error-Vault, or with
  * define('ERRORVAULT_DISABLE_REMOTE_ACTIONS', true);
  */
 
@@ -88,7 +88,7 @@ class ErrorVault_Security_Actions {
 
             if (!self::enabled()) {
                 $status = 'failed';
-                $message = 'Remote cleanup actions are turned off in the ErrorVault plugin settings on this site.';
+                $message = 'Remote cleanup actions are turned off in the Error-Vault plugin settings on this site.';
                 $data = array();
             } elseif (!in_array($type, self::TYPES, true)) {
                 $status = 'failed';
@@ -233,7 +233,7 @@ class ErrorVault_Security_Actions {
             throw new Exception('The root .htaccess is never quarantined (it would break permalinks). Edit it by hand.');
         }
         if (0 === strpos($real . '/', wp_normalize_path(ERRORVAULT_PLUGIN_DIR))) {
-            throw new Exception('Refusing to quarantine the ErrorVault plugin.');
+            throw new Exception('Refusing to quarantine the Error-Vault plugin.');
         }
 
         // Genuine core paths are fixed by reinstalling core, not removed.
@@ -443,7 +443,7 @@ class ErrorVault_Security_Actions {
             throw new Exception('Invalid plugin slug.');
         }
         if (dirname(plugin_basename(ERRORVAULT_PLUGIN_DIR . 'errorvault.php')) === $slug) {
-            throw new Exception('Refusing to touch the ErrorVault plugin.');
+            throw new Exception('Refusing to touch the Error-Vault plugin.');
         }
 
         require_once ABSPATH . 'wp-admin/includes/plugin.php';

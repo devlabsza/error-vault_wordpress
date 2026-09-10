@@ -1,6 +1,6 @@
 <?php
 /**
- * Database Exporter for ErrorVault Backups
+ * Database Exporter for Error-Vault Backups
  * Pure PHP implementation for shared hosting compatibility
  */
 
@@ -97,7 +97,7 @@ class EV_DB_Exporter {
      * Write SQL file header
      */
     private function write_header($handle) {
-        $header = "-- ErrorVault WordPress Database Backup\n";
+        $header = "-- Error-Vault WordPress Database Backup\n";
         $header .= "-- Generated: " . current_time('mysql') . "\n";
         $header .= "-- WordPress Version: " . get_bloginfo('version') . "\n";
         $header .= "-- PHP Version: " . PHP_VERSION . "\n";

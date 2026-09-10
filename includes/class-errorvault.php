@@ -1,6 +1,6 @@
 <?php
 /**
- * Main ErrorVault class
+ * Main Error-Vault class
  */
 
 if (!defined('ABSPATH')) {

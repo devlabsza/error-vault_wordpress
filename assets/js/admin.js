@@ -1,5 +1,5 @@
 /**
- * ErrorVault Admin JavaScript
+ * Error-Vault Admin JavaScript
  */
 
 (function($) {

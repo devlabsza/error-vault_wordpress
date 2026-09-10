@@ -1,6 +1,6 @@
 <?php
 /**
- * Cron Management for ErrorVault Backups
+ * Cron Management for Error-Vault Backups
  * Handles scheduling and execution of backup polling
  */
 

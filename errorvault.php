@@ -1,10 +1,10 @@
 <?php
 /**
- * Plugin Name: ErrorVault
+ * Plugin Name: Error-Vault
  * Plugin URI: https://error-vault.com
- * Description: Send PHP errors to your ErrorVault dashboard for centralized error monitoring.
- * Version: 1.7.1
- * Author: ErrorVault
+ * Description: Send PHP errors to your Error-Vault dashboard for centralized error monitoring.
+ * Version: 1.7.2
+ * Author: Error-Vault
  * Author URI: https://error-vault.com
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('ERRORVAULT_VERSION', '1.7.1');
+define('ERRORVAULT_VERSION', '1.7.2');
 define('ERRORVAULT_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ERRORVAULT_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ERRORVAULT_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -108,8 +108,30 @@ function errorvault_activate() {
     if (!get_option('errorvault_settings')) {
         add_option('errorvault_settings', $defaults);
     }
+
+    // Send the admin to the settings page after activating (see errorvault_activation_redirect).
+    update_option('errorvault_activation_redirect', 1, false);
 }
 register_activation_hook(__FILE__, 'errorvault_activate');
+
+/**
+ * After a single activation from wp-admin, land on Settings > Error-Vault so
+ * the API token can be entered straight away.
+ */
+function errorvault_activation_redirect() {
+    if (!get_option('errorvault_activation_redirect')) {
+        return;
+    }
+    delete_option('errorvault_activation_redirect');
+
+    if (wp_doing_ajax() || is_network_admin() || isset($_GET['activate-multi']) || !current_user_can('manage_options')) {
+        return;
+    }
+
+    wp_safe_redirect(admin_url('options-general.php?page=errorvault'));
+    exit;
+}
+add_action('admin_init', 'errorvault_activation_redirect');
 
 /**
  * Deactivation hook

@@ -1,6 +1,6 @@
 <?php
 /**
- * Admin class for ErrorVault
+ * Admin class for Error-Vault
  */
 
 if (!defined('ABSPATH')) {
@@ -52,8 +52,8 @@ class ErrorVault_Admin {
      */
     public function add_admin_menu() {
         add_options_page(
-            __('ErrorVault Settings', 'errorvault'),
-            __('ErrorVault', 'errorvault'),
+            __('Error-Vault Settings', 'errorvault'),
+            __('Error-Vault', 'errorvault'),
             'manage_options',
             'errorvault',
             array($this, 'render_settings_page')
@@ -133,10 +133,10 @@ class ErrorVault_Admin {
                 'verified' => __('Connection successful!', 'errorvault'),
                 'failed' => __('Connection failed', 'errorvault'),
                 'testing' => __('Sending test error...', 'errorvault'),
-                'testSuccess' => __('Test error sent! Check your ErrorVault dashboard.', 'errorvault'),
+                'testSuccess' => __('Test error sent! Check your Error-Vault dashboard.', 'errorvault'),
                 'testFailed' => __('Failed to send test error', 'errorvault'),
                 'testingHealth' => __('Sending health report...', 'errorvault'),
-                'testHealthSuccess' => __('Health report sent! Check your ErrorVault Server Health dashboard.', 'errorvault'),
+                'testHealthSuccess' => __('Health report sent! Check your Error-Vault Server Health dashboard.', 'errorvault'),
                 'testHealthFailed' => __('Failed to send health report', 'errorvault'),
                 'triggeringBackup' => __('Triggering backup poll...', 'errorvault'),
                 'backupTriggered' => __('Backup poll triggered! Check logs below.', 'errorvault'),
@@ -189,7 +189,7 @@ class ErrorVault_Admin {
                                     <?php _e('Verify Connection', 'errorvault'); ?>
                                 </button>
                                 <span id="verify-result"></span>
-                                <p class="description"><?php _e('Copy this from your site settings in the ErrorVault portal.', 'errorvault'); ?></p>
+                                <p class="description"><?php _e('Copy this from your site settings in the Error-Vault portal.', 'errorvault'); ?></p>
                             </td>
                         </tr>
 
@@ -199,7 +199,7 @@ class ErrorVault_Admin {
                                 <label>
                                     <input type="checkbox" name="errorvault_settings[enabled]" value="1"
                                         <?php checked(!empty($settings['enabled'])); ?>>
-                                    <?php _e('Send errors to ErrorVault', 'errorvault'); ?>
+                                    <?php _e('Send errors to Error-Vault', 'errorvault'); ?>
                                 </label>
                             </td>
                         </tr>
@@ -448,7 +448,7 @@ class ErrorVault_Admin {
                 <div class="errorvault-card">
                     <h2><?php _e('Backup Status', 'errorvault'); ?></h2>
                     <p class="description" style="margin-bottom: 15px;">
-                        <?php _e('Monitor automated backup operations. Backups are triggered from your ErrorVault dashboard and run automatically.', 'errorvault'); ?>
+                        <?php _e('Monitor automated backup operations. Backups are triggered from your Error-Vault dashboard and run automatically.', 'errorvault'); ?>
                     </p>
 
                     <?php
@@ -535,7 +535,7 @@ class ErrorVault_Admin {
                 <div class="errorvault-card">
                     <h2><?php _e('Security Scan', 'errorvault'); ?></h2>
                     <p class="description" style="margin-bottom: 15px;">
-                        <?php _e('Checks core files against WordPress.org, looks for rogue administrators, malicious plugins, webshells and backdoors, and reports the results to ErrorVault. Runs automatically every 24 hours.', 'errorvault'); ?>
+                        <?php _e('Checks core files against WordPress.org, looks for rogue administrators, malicious plugins, webshells and backdoors, and reports the results to Error-Vault. Runs automatically every 24 hours.', 'errorvault'); ?>
                     </p>
 
                     <?php
@@ -567,7 +567,7 @@ class ErrorVault_Admin {
                                     <?php elseif (!empty($last_scan['status']) && isset($status_labels[$last_scan['status']])): ?>
                                         <strong style="color: <?php echo esc_attr($status_labels[$last_scan['status']][1]); ?>;"><?php echo esc_html($status_labels[$last_scan['status']][0]); ?></strong>
                                         <?php if (!empty($last_scan['url'])): ?>
-                                            &nbsp;<a href="<?php echo esc_url($last_scan['url']); ?>" target="_blank" rel="noopener"><?php _e('View report in ErrorVault', 'errorvault'); ?> &rarr;</a>
+                                            &nbsp;<a href="<?php echo esc_url($last_scan['url']); ?>" target="_blank" rel="noopener"><?php _e('View report in Error-Vault', 'errorvault'); ?> &rarr;</a>
                                         <?php endif; ?>
                                     <?php else: ?>
                                         <span style="color: #999;">—</span>
@@ -596,9 +596,9 @@ class ErrorVault_Admin {
                                         <label>
                                             <input type="checkbox" name="errorvault_settings[allow_remote_actions]" value="1"
                                                 <?php checked(empty($settings['disable_remote_actions'])); ?>>
-                                            <?php _e('Allow cleanup actions requested from the ErrorVault dashboard', 'errorvault'); ?>
+                                            <?php _e('Allow cleanup actions requested from the Error-Vault dashboard', 'errorvault'); ?>
                                         </label>
-                                        <p class="description"><?php _e('Quarantine flagged files (restorable), remove malicious plugins, reinstall plugins/core from WordPress.org, delete rogue admins, rotate salts. Nothing sent by ErrorVault is ever run as code.', 'errorvault'); ?></p>
+                                        <p class="description"><?php _e('Quarantine flagged files (restorable), remove malicious plugins, reinstall plugins/core from WordPress.org, delete rogue admins, rotate salts. Nothing sent by Error-Vault is ever run as code.', 'errorvault'); ?></p>
                                     <?php endif; ?>
                                 </td>
                             </tr>
@@ -650,7 +650,7 @@ class ErrorVault_Admin {
 
         wp_add_dashboard_widget(
             'errorvault_dashboard_widget',
-            __('ErrorVault Status', 'errorvault'),
+            __('Error-Vault Status', 'errorvault'),
             array($this, 'render_dashboard_widget')
         );
     }
@@ -683,7 +683,7 @@ class ErrorVault_Admin {
             </div>
             <p>
                 <a href="https://error-vault.com/dashboard" target="_blank">
-                    <?php _e('View ErrorVault Dashboard', 'errorvault'); ?> &rarr;
+                    <?php _e('View Error-Vault Dashboard', 'errorvault'); ?> &rarr;
                 </a>
             </p>
         </div>
@@ -719,11 +719,11 @@ class ErrorVault_Admin {
         }
 
         $error_data = array(
-            'message' => 'Test error from ErrorVault WordPress plugin',
+            'message' => 'Test error from Error-Vault WordPress plugin',
             'severity' => 'warning',
             'file' => __FILE__,
             'line' => __LINE__,
-            'stack_trace' => 'This is a test error sent from the ErrorVault settings page.',
+            'stack_trace' => 'This is a test error sent from the Error-Vault settings page.',
             'context' => array('test' => true),
             'php_version' => PHP_VERSION,
             'wp_version' => get_bloginfo('version'),
