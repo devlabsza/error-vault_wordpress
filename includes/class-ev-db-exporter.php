@@ -98,6 +98,8 @@ class EV_DB_Exporter {
      */
     private function write_header($handle) {
         $header = "-- Error-Vault WordPress Database Backup\n";
+        // Marks dumps made after the "%"-placeholder fix; the restorer only repairs older ones.
+        $header .= "-- Error-Vault export format: 2\n";
         $header .= "-- Generated: " . current_time('mysql') . "\n";
         $header .= "-- WordPress Version: " . get_bloginfo('version') . "\n";
         $header .= "-- PHP Version: " . PHP_VERSION . "\n";
@@ -130,14 +132,12 @@ class EV_DB_Exporter {
      * Get all tables in database
      */
     private function get_tables() {
-        $tables = array();
-        $results = $this->wpdb->get_results('SHOW TABLES', ARRAY_N);
+        // Only this site's tables: a database shared by several installs must
+        // not have the other sites' tables in this site's backup.
+        $prefix = is_multisite() ? $this->wpdb->base_prefix : $this->wpdb->prefix;
+        $results = $this->wpdb->get_col($this->wpdb->prepare('SHOW TABLES LIKE %s', $this->wpdb->esc_like($prefix) . '%'));
 
-        foreach ($results as $row) {
-            $tables[] = $row[0];
-        }
-
-        return $tables;
+        return array_values(array_filter((array) $results, 'is_string'));
     }
 
     /**
@@ -161,21 +161,34 @@ class EV_DB_Exporter {
             list($host, $port) = explode(':', $host, 2);
         }
         
-        // Build mysqldump command
+        $tables = $this->get_tables();
+        if (empty($tables)) {
+            return false;
+        }
+
+        // stderr goes to its own file: with "2>&1" mysqldump's warnings (e.g. about
+        // passwords on the command line) ended up inside the SQL dump.
+        $error_path = $target_sql_path . '.err';
         $command = sprintf(
-            '%s --host=%s --port=%s --user=%s --password=%s --single-transaction --quick --lock-tables=false %s > %s 2>&1',
+            '%s --host=%s --port=%s --user=%s --password=%s --single-transaction --quick --lock-tables=false %s %s > %s 2> %s',
             escapeshellarg($mysqldump_path),
             escapeshellarg($host),
             escapeshellarg($port),
             escapeshellarg(DB_USER),
             escapeshellarg(DB_PASSWORD),
             escapeshellarg(DB_NAME),
-            escapeshellarg($target_sql_path)
+            implode(' ', array_map('escapeshellarg', $tables)),
+            escapeshellarg($target_sql_path),
+            escapeshellarg($error_path)
         );
-        
+
         $start_time = time();
         exec($command, $output, $return_code);
         $elapsed = time() - $start_time;
+        if (file_exists($error_path)) {
+            $output = array_merge((array) $output, array_slice(file($error_path, FILE_IGNORE_NEW_LINES) ?: array(), 0, 10));
+            @unlink($error_path);
+        }
         
         if ($return_code === 0 && file_exists($target_sql_path) && filesize($target_sql_path) > 0) {
             $file_size_mb = round(filesize($target_sql_path) / 1024 / 1024, 2);
@@ -313,7 +326,11 @@ class EV_DB_Exporter {
                 if ($value === null) {
                     $values[] = 'NULL';
                 } else {
-                    $escaped = $this->wpdb->_real_escape($value);
+                    // Not $wpdb->_real_escape(): since WP 4.8.3 it swaps every "%" for a
+                    // random placeholder, which corrupted any value containing "%".
+                    $escaped = ($this->wpdb->dbh instanceof mysqli)
+                        ? mysqli_real_escape_string($this->wpdb->dbh, (string) $value)
+                        : $this->wpdb->remove_placeholder_escape($this->wpdb->_real_escape($value));
                     $values[] = "'" . $escaped . "'";
                 }
             }

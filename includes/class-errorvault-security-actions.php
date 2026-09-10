@@ -31,7 +31,11 @@ class ErrorVault_Security_Actions {
     const TYPES = array(
         'quarantine_path', 'restore_quarantine', 'remove_plugin', 'reinstall_plugin',
         'update_core', 'delete_admin', 'rotate_salts', 'logout_all', 'fix_active_plugins',
+        'restore_backup', 'undo_restore',
     );
+
+    /** Id of the action being run, for actions that finish later (approved restores). */
+    private static $current_action_id = 0;
 
     const SALT_KEYS = array(
         'AUTH_KEY', 'SECURE_AUTH_KEY', 'LOGGED_IN_KEY', 'NONCE_KEY',
@@ -95,11 +99,16 @@ class ErrorVault_Security_Actions {
                 $message = 'Unknown action type.';
                 $data = array();
             } else {
+                self::$current_action_id = $id;
                 try {
                     $data = self::run($type, $params);
                     $status = 'completed';
                     $message = isset($data['message']) ? $data['message'] : 'Done.';
                     unset($data['message']);
+                } catch (EV_Restore_Needs_Approval $e) {
+                    $status = 'waiting';
+                    $message = $e->getMessage();
+                    $data = array();
                 } catch (Throwable $e) {
                     $status = 'failed';
                     $message = $e->getMessage();
@@ -144,6 +153,16 @@ class ErrorVault_Security_Actions {
         update_option(self::EXECUTED_OPTION, $executed, false);
     }
 
+    /**
+     * Send (or re-send) an action's outcome, e.g. once an approved restore finishes.
+     */
+    public static function report_result($id, $status, $message, $data) {
+        $executed = get_option(self::EXECUTED_OPTION, array());
+        $executed[(int) $id] = array('status' => $status, 'message' => $message, 'data' => (array) $data, 'reported' => false, 'time' => time());
+        $executed[(int) $id]['reported'] = self::report($id, $status, $message, $data);
+        self::save_executed($executed);
+    }
+
     private static function report($id, $status, $message, $data) {
         $response = wp_remote_post(ErrorVault_Security_Scanner::api_base() . '/security/actions/' . (int) $id . '/result', array(
             'timeout' => 20,
@@ -179,6 +198,10 @@ class ErrorVault_Security_Actions {
                 return array('message' => 'Logged out every user on the site.');
             case 'fix_active_plugins':
                 return self::fix_active_plugins();
+            case 'restore_backup':
+                return (new EV_Backup_Restorer())->restore(isset($params['backup_id']) ? (int) $params['backup_id'] : 0, self::$current_action_id);
+            case 'undo_restore':
+                return (new EV_Backup_Restorer())->undo(isset($params['restore_id']) ? (string) $params['restore_id'] : '');
         }
         throw new Exception('Unknown action type.');
     }

@@ -71,25 +71,35 @@ class ErrorVault_Admin {
      * Sanitize settings
      */
     public function sanitize_settings($input) {
+        $input = is_array($input) ? $input : array();
         $sanitized = array();
 
+        // Browsers don't submit unticked checkboxes. From the settings form (marked
+        // with _form) a missing checkbox means "off"; for saves made in code, a
+        // missing key keeps its default. Previously "Include PHP warnings" and
+        // "Send immediately" could never be switched off.
+        $from_form = !empty($input['_form']);
+        $checkbox = function ($key, $default) use ($input, $from_form) {
+            if (array_key_exists($key, $input)) {
+                return (bool) $input[$key];
+            }
+            return $from_form ? false : $default;
+        };
+
         $sanitized['api_token'] = isset($input['api_token']) ? sanitize_text_field($input['api_token']) : '';
-        $sanitized['enabled'] = isset($input['enabled']) ? (bool)$input['enabled'] : false;
-        $sanitized['include_notices'] = isset($input['include_notices']) ? (bool)$input['include_notices'] : false;
-        $sanitized['include_warnings'] = isset($input['include_warnings']) ? (bool)$input['include_warnings'] : true;
-        $sanitized['send_immediately'] = isset($input['send_immediately']) ? (bool)$input['send_immediately'] : true;
+        $sanitized['enabled'] = $checkbox('enabled', false);
+        $sanitized['include_notices'] = $checkbox('include_notices', false);
+        $sanitized['include_warnings'] = $checkbox('include_warnings', true);
+        $sanitized['send_immediately'] = $checkbox('send_immediately', true);
         $sanitized['batch_size'] = isset($input['batch_size']) ? absint($input['batch_size']) : 10;
 
-        // Handle exclude patterns
-        if (isset($input['exclude_patterns'])) {
-            $patterns = explode("\n", $input['exclude_patterns']);
-            $sanitized['exclude_patterns'] = array_filter(array_map('trim', $patterns));
-        } else {
-            $sanitized['exclude_patterns'] = array();
-        }
+        // Textarea (one per line) from the form, or an array when saved in code.
+        $patterns = isset($input['exclude_patterns']) ? $input['exclude_patterns'] : array();
+        $patterns = is_array($patterns) ? $patterns : explode("\n", (string) $patterns);
+        $sanitized['exclude_patterns'] = array_values(array_filter(array_map('trim', array_map('strval', $patterns))));
 
         // Health monitoring settings
-        $sanitized['health_monitoring_enabled'] = isset($input['health_monitoring_enabled']) ? (bool)$input['health_monitoring_enabled'] : false;
+        $sanitized['health_monitoring_enabled'] = $checkbox('health_monitoring_enabled', false);
         $sanitized['cpu_load_threshold'] = isset($input['cpu_load_threshold']) ? (float)$input['cpu_load_threshold'] : 2.0;
         $sanitized['memory_threshold'] = isset($input['memory_threshold']) ? absint($input['memory_threshold']) : 80;
         $sanitized['request_rate_threshold'] = isset($input['request_rate_threshold']) ? absint($input['request_rate_threshold']) : 100;
@@ -97,7 +107,11 @@ class ErrorVault_Admin {
         $sanitized['alert_cooldown'] = isset($input['alert_cooldown']) ? absint($input['alert_cooldown']) : 300;
 
         // Stored as an opt-out so existing installs keep remote cleanup enabled.
-        $sanitized['disable_remote_actions'] = empty($input['allow_remote_actions']);
+        if ($from_form) {
+            $sanitized['disable_remote_actions'] = empty($input['allow_remote_actions']);
+        } else {
+            $sanitized['disable_remote_actions'] = !empty($input['disable_remote_actions']);
+        }
 
         return $sanitized;
     }
@@ -172,6 +186,7 @@ class ErrorVault_Admin {
 
             <form method="post" action="options.php">
                 <?php settings_fields('errorvault_settings'); ?>
+                <input type="hidden" name="errorvault_settings[_form]" value="1">
 
                 <div class="errorvault-card">
                     <h2><?php _e('Connection Settings', 'errorvault'); ?></h2>

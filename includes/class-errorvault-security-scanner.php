@@ -242,6 +242,9 @@ class ErrorVault_Security_Scanner {
         // Re-send any action results that failed to reach the portal last time.
         ErrorVault_Security_Actions::flush_unreported();
 
+        // Drop restore undo points (old tables/files) once they're over a week old.
+        EV_Backup_Restorer::cleanup_expired();
+
         $data = self::fetch_pending();
         if (null === $data) {
             return;

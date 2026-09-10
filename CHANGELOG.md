@@ -2,6 +2,22 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.8.0] - 2026-09-10
+
+### Added
+- **Full-site backups.** The database plus all of `wp-content` (themes, plugins, must-use plugins, languages; uploads optional) and `wp-config.php`, `.htaccess`, `.user.ini`, `robots.txt`. Caches, other backup tools' archives and quarantine are skipped. WordPress core isn't included, since it's reinstalled from WordPress.org. Full backups can be up to 2 GB (`errorvault_backup_max_bytes` filter). Each archive includes a `manifest.json`.
+- **One-click restore from the Error-Vault dashboard**, with **undo for 7 days**:
+  - The database is imported into temporary tables first, so the live site is untouched while it loads. The tables are then switched over in one atomic step, and `wp-content` folders are swapped with renames.
+  - Error-Vault itself and its settings, the site URL, `wp-config.php` and WordPress core are kept.
+  - Only archives this site recorded (SHA-256) when it made them restore without asking. Older or unknown archives need an administrator to click **Approve restore** in wp-admin.
+- `errorvault_backup_chunk_size` filter for hosts that reject large upload requests (HTTP 413).
+
+### Fixed
+- **Database backups made without `mysqldump` corrupted every value containing `%`.** WordPress's escaping function swaps `%` for a random placeholder. Values are now escaped directly, and restoring an older backup repairs the placeholders.
+- `mysqldump` warnings were written into the SQL dump (`2>&1`), breaking imports.
+- Backups included every table in a shared database; now only this site's tables are included.
+- **Settings: "Include PHP warnings" and "Send immediately" couldn't be switched off.** An unticked checkbox fell back to "on". Saves made in code no longer reset "Remote Cleanup" or crash on `exclude_patterns`.
+
 ## [1.7.3] - 2026-09-10
 
 ### Fixed

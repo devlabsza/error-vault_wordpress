@@ -38,7 +38,8 @@ class EV_Backup_Manager {
      * Get API base URL
      */
     private function get_api_base() {
-        return 'https://error-vault.com';
+        // ERRORVAULT_API_BASE (".../api/v1") is only for development against a local portal.
+        return preg_replace('#/api/v1/?$#', '', ErrorVault_Security_Scanner::api_base());
     }
 
     /**
@@ -100,10 +101,11 @@ class EV_Backup_Manager {
             $backup = $data['data']['backup'];
             $backup_id = (int) $backup['id'];
             $include_uploads = !empty($backup['include_uploads']);
+            $scope = (isset($backup['scope']) && 'full' === $backup['scope']) ? 'full' : 'database';
 
-            $this->log('Pending backup found: ID=' . $backup_id . ', include_uploads=' . ($include_uploads ? 'yes' : 'no'));
+            $this->log('Pending backup found: ID=' . $backup_id . ', scope=' . $scope . ', include_uploads=' . ($include_uploads ? 'yes' : 'no'));
 
-            $this->run_backup($backup_id, $include_uploads);
+            $this->run_backup($backup_id, $include_uploads, $scope);
 
         } catch (Exception $e) {
             $this->log('Poll exception: ' . $e->getMessage());
@@ -117,7 +119,7 @@ class EV_Backup_Manager {
     /**
      * Run backup process
      */
-    public function run_backup($backup_id, $include_uploads) {
+    public function run_backup($backup_id, $include_uploads, $scope = 'database') {
         // Check failure count for this backup
         $failure_key = 'ev_backup_failures_' . $backup_id;
         $failure_count = (int) get_transient($failure_key);
@@ -165,9 +167,24 @@ class EV_Backup_Manager {
                 $this->log('INFO: Large database detected - backup has been running for ' . round($elapsed/60, 1) . ' minutes');
             }
 
-            $this->log('Building ZIP archive...');
-            $archive_result = $this->build_archive($sql_path, $zip_path, $include_uploads);
-            
+            global $wpdb;
+            $manifest = array(
+                'format' => 2,
+                'scope' => $scope,
+                'include_uploads' => (bool) $include_uploads,
+                'contents' => 'full' === $scope
+                    ? array_values(array_filter(array('database', 'wp-content', $include_uploads ? 'uploads' : null, 'wp-config')))
+                    : array_values(array_filter(array('database', $include_uploads ? 'uploads' : null))),
+                'wp_version' => ErrorVault_Security_Scanner::installed_wp_version(),
+                'table_prefix' => $wpdb->prefix,
+                'site_url' => get_site_url(),
+                'plugin_version' => ERRORVAULT_VERSION,
+                'created_at' => gmdate('c'),
+            );
+
+            $this->log('Building ZIP archive (' . $scope . ')...');
+            $archive_result = $this->build_archive($sql_path, $zip_path, $include_uploads, $scope, $manifest);
+
             if (!$archive_result['success']) {
                 throw new Exception('Archive creation failed: ' . $archive_result['error']);
             }
@@ -175,22 +192,19 @@ class EV_Backup_Manager {
             $checksum = hash_file('sha256', $zip_path);
             $file_size = filesize($zip_path);
             $file_size_mb = round($file_size / 1024 / 1024, 2);
-            
+
             $this->log('Archive created: ' . $file_size_mb . 'MB, SHA256=' . substr($checksum, 0, 16) . '...');
 
-            if ($file_size > 512000 * 1024) {
-                throw new Exception('Backup file exceeds 500MB limit (' . $file_size_mb . 'MB)');
+            $max_bytes = (int) apply_filters('errorvault_backup_max_bytes', 'full' === $scope ? 2 * GB_IN_BYTES : 500 * MB_IN_BYTES, $scope);
+            if ($file_size > $max_bytes) {
+                throw new Exception('Backup file exceeds the ' . size_format($max_bytes) . ' limit (' . $file_size_mb . 'MB). Try without uploads.');
             }
 
-            $metadata = array(
-                'wp_version' => get_bloginfo('version'),
+            $metadata = array_merge($manifest, array(
                 'php_version' => PHP_VERSION,
-                'include_uploads' => $include_uploads,
                 'file_size' => $file_size,
-                'site_url' => get_site_url(),
                 'site_name' => get_bloginfo('name'),
-                'created_at' => current_time('mysql'),
-            );
+            ));
 
             $this->log('Uploading backup...');
             $upload_result = $this->upload_archive($backup_id, $zip_path, $checksum, $metadata);
@@ -198,6 +212,10 @@ class EV_Backup_Manager {
             if (!$upload_result['success']) {
                 throw new Exception('Upload failed: ' . $upload_result['error']);
             }
+
+            // Remember what this site produced: only these archives can be restored
+            // remotely without an administrator's approval.
+            EV_Backup_Restorer::record_backup($backup_id, $checksum);
 
             $total_time = time() - $start_time;
             $this->log('Backup completed successfully in ' . $total_time . ' seconds');
@@ -246,7 +264,7 @@ class EV_Backup_Manager {
     /**
      * Build ZIP archive
      */
-    private function build_archive($sql_path, $zip_path, $include_uploads) {
+    private function build_archive($sql_path, $zip_path, $include_uploads, $scope = 'database', $manifest = array()) {
         if (!class_exists('ZipArchive')) {
             return array(
                 'success' => false,
@@ -295,13 +313,36 @@ class EV_Backup_Manager {
             );
         }
 
-        if ($include_uploads) {
+        if (!empty($manifest)) {
+            $zip->addFromString('manifest.json', wp_json_encode($manifest, JSON_PRETTY_PRINT));
+        }
+
+        if ('full' === $scope) {
+            // Full site: all of wp-content plus config files. WordPress core is
+            // not included; it's reinstalled from WordPress.org instead.
+            $this->log('Adding wp-content to archive...');
+            $add_result = $this->add_wp_content_to_zip($zip, $include_uploads);
+            if (!$add_result['success']) {
+                $zip->close();
+                return $add_result;
+            }
+
+            foreach (array('wp-config.php', '.htaccess', '.user.ini', 'robots.txt') as $root_file) {
+                $path = ABSPATH . $root_file;
+                if ('wp-config.php' === $root_file && !is_file($path) && is_file(dirname(ABSPATH) . '/wp-config.php')) {
+                    $path = dirname(ABSPATH) . '/wp-config.php';
+                }
+                if (is_file($path) && is_readable($path)) {
+                    $zip->addFile($path, 'root/' . $root_file);
+                }
+            }
+        } elseif ($include_uploads) {
             $uploads_dir = WP_CONTENT_DIR . '/uploads';
-            
+
             if (is_dir($uploads_dir)) {
                 $this->log('Adding uploads directory to archive...');
                 $add_result = $this->add_directory_to_zip($zip, $uploads_dir, 'uploads');
-                
+
                 if (!$add_result['success']) {
                     $zip->close();
                     return $add_result;
@@ -311,8 +352,66 @@ class EV_Backup_Manager {
             }
         }
 
-        $zip->close();
+        if (!$zip->close()) {
+            return array(
+                'success' => false,
+                'error' => 'Failed to write the ZIP archive (disk space?)',
+            );
+        }
 
+        return array('success' => true);
+    }
+
+    /**
+     * Add wp-content to the archive under "wp-content/", skipping caches,
+     * other backup tools' archives, our own backup temp files and quarantine.
+     */
+    private function add_wp_content_to_zip($zip, $include_uploads) {
+        $root = wp_normalize_path(untrailingslashit(WP_CONTENT_DIR));
+        $skip_top = array('cache', 'upgrade', 'upgrade-temp-backup', 'wflogs', 'ai1wm-backups', 'updraft', 'backups-dup-lite', 'et-cache');
+        if (!$include_uploads) {
+            $skip_top[] = 'uploads';
+        }
+        $skip_anywhere = array('node_modules', '.git', 'errorvault-backups');
+
+        $filter = new RecursiveCallbackFilterIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+            function ($current) use ($root, $skip_top, $skip_anywhere) {
+                if ($current->isLink()) {
+                    return false;
+                }
+                $name = $current->getFilename();
+                if ($current->isDir()) {
+                    if (in_array($name, $skip_anywhere, true) || 0 === strpos($name, 'errorvault-quarantine')) {
+                        return false;
+                    }
+                    if (wp_normalize_path($current->getPath()) === $root && in_array($name, $skip_top, true)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        );
+
+        $count = 0;
+        foreach (new RecursiveIteratorIterator($filter, RecursiveIteratorIterator::SELF_FIRST) as $file) {
+            $relative = 'wp-content/' . ltrim(substr(wp_normalize_path($file->getPathname()), strlen($root)), '/');
+            if ($file->isDir()) {
+                $zip->addEmptyDir($relative);
+                continue;
+            }
+            if (!$file->isReadable()) {
+                continue;
+            }
+            if (!$zip->addFile($file->getPathname(), $relative)) {
+                return array('success' => false, 'error' => 'Failed to add file to archive: ' . $relative);
+            }
+            if (++$count % 1000 === 0) {
+                $this->log('Added ' . $count . ' files from wp-content...');
+            }
+        }
+
+        $this->log('Added ' . $count . ' files from wp-content');
         return array('success' => true);
     }
 
@@ -368,7 +467,8 @@ class EV_Backup_Manager {
      */
     private function upload_archive($backup_id, $file_path, $checksum, $metadata) {
         $file_size = filesize($file_path);
-        $chunk_size = 5 * 1024 * 1024; // 5MB chunks
+        // 5MB chunks; lower it with the filter on hosts whose proxy rejects large request bodies (HTTP 413).
+        $chunk_size = max(256 * 1024, (int) apply_filters('errorvault_backup_chunk_size', 5 * 1024 * 1024));
         $total_chunks = ceil($file_size / $chunk_size);
         
         $this->log('Starting chunked upload: ' . $total_chunks . ' chunks of ' . round($chunk_size / 1024 / 1024, 2) . 'MB');
