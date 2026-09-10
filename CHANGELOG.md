@@ -2,6 +2,14 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.8.1] - 2026-09-10
+
+### Fixed
+- **Updates now state the WordPress and PHP versions they need.** The plugin header declares `Requires at least: 5.8` and `Requires PHP: 7.4`. The updater reads each release's own `readme.txt` ("Requires at least", "Requires PHP", "Tested up to") and passes them to WordPress:
+  - A release that needs newer PHP is shown as "does not work with your version of PHP" and is never auto-updated.
+  - A release that needs newer WordPress isn't offered, the same as on WordPress.org.
+  - Before, the requirements were hardcoded, and "Tested up to 6.4" flagged the plugin as untested on current WordPress.
+
 ## [1.8.0] - 2026-09-10
 
 ### Added

@@ -1,10 +1,10 @@
 === Error-Vault ===
 Contributors: errorvault
 Tags: error logging, debugging, error monitoring, php errors, developer tools, server health
-Requires at least: 5.0
-Tested up to: 6.4
+Requires at least: 5.8
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.8.0
+Stable tag: 1.8.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 

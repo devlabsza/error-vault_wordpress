@@ -99,14 +99,23 @@ class ErrorVault_Updater {
                 error_log('[ErrorVault Updater] Using release asset: ' . $package_url);
             }
             
+            // WordPress blocks (auto-)updates whose requires_php the server doesn't meet. It
+            // doesn't check "requires" for plugins (WordPress.org simply doesn't offer them),
+            // so a release needing newer WordPress isn't offered here either.
+            $requirements = $this->get_release_requirements($release);
+            if (!is_wp_version_compatible($requirements['requires'])) {
+                error_log('[ErrorVault Updater] ' . ltrim($release->tag_name, 'v') . ' needs WordPress ' . $requirements['requires'] . ', not offering it');
+                return $transient;
+            }
             $plugin_data = array(
                 'slug' => 'errorvault-wordpress',
                 'plugin' => 'errorvault-wordpress/errorvault.php',
                 'new_version' => ltrim($release->tag_name, 'v'),
                 'url' => "https://github.com/{$this->github_user}/{$this->github_repo}",
                 'package' => $package_url,
-                'tested' => '6.4',
-                'requires_php' => '7.4',
+                'requires' => $requirements['requires'],
+                'requires_php' => $requirements['requires_php'],
+                'tested' => $requirements['tested'],
             );
 
             error_log('[ErrorVault Updater] Update available: ' . $this->version . ' -> ' . ltrim($release->tag_name, 'v'));
@@ -140,15 +149,16 @@ class ErrorVault_Updater {
             $package_url = $release->zipball_url;
         }
 
+        $requirements = $this->get_release_requirements($release);
         $plugin_info = array(
             'name' => 'Error-Vault',
             'slug' => 'errorvault-wordpress',
             'version' => ltrim($release->tag_name, 'v'),
             'author' => '<a href="https://error-vault.com">Error-Vault</a>',
             'homepage' => "https://github.com/{$this->github_user}/{$this->github_repo}",
-            'requires' => '5.8',
-            'tested' => '6.4',
-            'requires_php' => '7.4',
+            'requires' => $requirements['requires'],
+            'tested' => $requirements['tested'],
+            'requires_php' => $requirements['requires_php'],
             'download_link' => $package_url,
             'sections' => array(
                 'description' => $this->parse_markdown_description($release->body),
@@ -314,6 +324,53 @@ class ErrorVault_Updater {
         }
 
         return false;
+    }
+
+    /**
+     * WordPress/PHP requirements of a release, read from that release's own
+     * readme.txt ("Requires at least", "Requires PHP", "Tested up to"), so a
+     * future version that needs newer PHP isn't offered to sites that can't
+     * run it. Falls back to this installed version's values.
+     */
+    private function get_release_requirements($release) {
+        $headers = get_file_data($this->plugin_basename, array('requires' => 'Requires at least', 'requires_php' => 'Requires PHP'));
+        $defaults = array(
+            'requires' => $headers['requires'] ? $headers['requires'] : '5.8',
+            'requires_php' => $headers['requires_php'] ? $headers['requires_php'] : '7.4',
+            'tested' => get_bloginfo('version'),
+        );
+        $readme = @file_get_contents(ERRORVAULT_PLUGIN_DIR . 'readme.txt');
+        if ($readme && preg_match('/^Tested up to:\s*([0-9.]+)/mi', $readme, $m)) {
+            $defaults['tested'] = $m[1];
+        }
+
+        $tag = isset($release->tag_name) ? preg_replace('/[^0-9A-Za-z._-]/', '', $release->tag_name) : '';
+        if ('' === $tag) {
+            return $defaults;
+        }
+
+        $cache_key = 'errorvault_release_req_' . md5($tag);
+        $cached = get_transient($cache_key);
+        if (is_array($cached)) {
+            return $cached;
+        }
+
+        $response = wp_remote_get("https://raw.githubusercontent.com/{$this->github_user}/{$this->github_repo}/{$tag}/readme.txt", array('timeout' => 10));
+        if (is_wp_error($response) || 200 !== (int) wp_remote_retrieve_response_code($response)) {
+            return $defaults;
+        }
+
+        $body = wp_remote_retrieve_body($response);
+        $requirements = $defaults;
+        foreach (array('requires' => 'Requires at least', 'requires_php' => 'Requires PHP', 'tested' => 'Tested up to') as $key => $label) {
+            if (preg_match('/^' . preg_quote($label, '/') . ':\s*([0-9.]+)/mi', $body, $m)) {
+                $requirements[$key] = $m[1];
+            }
+        }
+
+        set_transient($cache_key, $requirements, DAY_IN_SECONDS);
+
+        return $requirements;
     }
 
     /**
