@@ -88,6 +88,18 @@ class ErrorVault_Security_Scanner {
         return (int) $m[1] . '.' . (isset($m[2]) ? (int) $m[2] : 0) . '.' . (isset($m[3]) ? (int) $m[3] : 0);
     }
 
+    /**
+     * Core version as installed on disk. get_bloginfo('version') reflects the
+     * code loaded into this request, which is stale right after a core update.
+     */
+    public static function installed_wp_version() {
+        $contents = @file_get_contents(ABSPATH . WPINC . '/version.php');
+        if ($contents && preg_match('/\$wp_version\s*=\s*[\'"]([^\'"]+)[\'"]/', $contents, $m)) {
+            return $m[1];
+        }
+        return get_bloginfo('version');
+    }
+
     public static function is_wp2shell_vulnerable($version = null) {
         $v = self::normalize_version($version ? $version : get_bloginfo('version'));
 
@@ -165,7 +177,15 @@ class ErrorVault_Security_Scanner {
         return isset($settings['api_token']) ? $settings['api_token'] : '';
     }
 
-    private static function headers() {
+    /**
+     * Portal API base. Override with ERRORVAULT_API_BASE in wp-config.php
+     * only for development against a local portal.
+     */
+    public static function api_base() {
+        return defined('ERRORVAULT_API_BASE') ? rtrim(ERRORVAULT_API_BASE, '/') : self::API_BASE;
+    }
+
+    public static function headers() {
         return array(
             'Content-Type' => 'application/json',
             'Accept' => 'application/json',
@@ -178,28 +198,59 @@ class ErrorVault_Security_Scanner {
      * Cron (every 5 minutes): ask the portal whether a scan is due or requested.
      */
     public static function poll() {
-        if (!self::api_token() || get_transient(self::BACKOFF_KEY) || get_transient(self::LOCK_KEY)) {
+        if (!self::api_token() || get_transient(self::LOCK_KEY)) {
             return;
         }
 
-        $response = wp_remote_get(self::API_BASE . '/security/pending', array(
+        // Re-send any action results that failed to reach the portal last time.
+        ErrorVault_Security_Actions::flush_unreported();
+
+        $data = self::fetch_pending();
+        if (null === $data) {
+            return;
+        }
+
+        $iocs = isset($data['iocs']) && is_array($data['iocs']) ? $data['iocs'] : array();
+
+        // Cleanup actions queued in the portal run first; then rescan so the
+        // portal sees the result of the cleanup straight away.
+        if (!empty($data['actions']) && is_array($data['actions'])) {
+            set_transient(self::LOCK_KEY, time(), 30 * MINUTE_IN_SECONDS);
+            try {
+                $completed = ErrorVault_Security_Actions::process($data['actions']);
+            } finally {
+                delete_transient(self::LOCK_KEY);
+            }
+            delete_transient(self::BACKOFF_KEY);
+
+            // After a core update this request still runs the old core code,
+            // so rescan from a fresh request a minute from now instead.
+            if (in_array('update_core', $completed, true)) {
+                wp_schedule_single_event(time() + 60, self::RUN_NOW_HOOK);
+                return;
+            }
+            self::run_and_report($iocs, 'requested');
+            return;
+        }
+
+        if (!empty($data['scan']) && !get_transient(self::BACKOFF_KEY)) {
+            self::run_and_report($iocs, isset($data['trigger']) ? $data['trigger'] : 'scheduled');
+        }
+    }
+
+    private static function fetch_pending() {
+        $response = wp_remote_get(self::api_base() . '/security/pending', array(
             'timeout' => 15,
             'headers' => self::headers(),
         ));
 
         if (is_wp_error($response) || 200 !== (int) wp_remote_retrieve_response_code($response)) {
-            return;
+            return null;
         }
 
         $body = json_decode(wp_remote_retrieve_body($response), true);
-        if (empty($body['data']['scan'])) {
-            return;
-        }
 
-        self::run_and_report(
-            isset($body['data']['iocs']) && is_array($body['data']['iocs']) ? $body['data']['iocs'] : array(),
-            isset($body['data']['trigger']) ? $body['data']['trigger'] : 'scheduled'
-        );
+        return isset($body['data']) && is_array($body['data']) ? $body['data'] : null;
     }
 
     public static function run_manual() {
@@ -264,7 +315,7 @@ class ErrorVault_Security_Scanner {
     }
 
     private static function send_report(array $report) {
-        $response = wp_remote_post(self::API_BASE . '/security/report', array(
+        $response = wp_remote_post(self::api_base() . '/security/report', array(
             'timeout' => 45,
             'headers' => self::headers(),
             'body' => wp_json_encode($report),
@@ -336,7 +387,7 @@ class ErrorVault_Security_Scanner {
         require_once ABSPATH . 'wp-admin/includes/plugin.php';
         require_once ABSPATH . 'wp-admin/includes/update.php';
 
-        $wp_version = get_bloginfo('version');
+        $wp_version = self::installed_wp_version();
 
         $admins = $this->collect_admins();
         $plugins = $this->collect_plugins();
@@ -345,6 +396,7 @@ class ErrorVault_Security_Scanner {
         $this->walk_content();
         $this->check_root_files();
         $this->check_config();
+        $this->check_database();
         $this->build_file_findings();
 
         foreach ($plugins as &$plugin) {
@@ -371,6 +423,7 @@ class ErrorVault_Security_Scanner {
                 'truncated' => $this->truncated,
                 'core_checksums' => $this->core_status,
                 'plugins_verified' => count($this->plugin_checksums),
+                'remote_actions' => ErrorVault_Security_Actions::enabled(),
             ),
         );
     }
@@ -805,7 +858,11 @@ class ErrorVault_Security_Scanner {
         try {
             $dir = new RecursiveDirectoryIterator(WP_CONTENT_DIR, FilesystemIterator::SKIP_DOTS);
             $filter = new RecursiveCallbackFilterIterator($dir, function ($current) use ($skip) {
-                return !($current->isDir() && in_array($current->getFilename(), $skip, true));
+                if (!$current->isDir()) {
+                    return true;
+                }
+                $name = $current->getFilename();
+                return !in_array($name, $skip, true) && 0 !== strpos($name, 'errorvault-quarantine');
             });
             $it = new RecursiveIteratorIterator($filter, RecursiveIteratorIterator::SELF_FIRST, RecursiveIteratorIterator::CATCH_GET_CHILD);
         } catch (Exception $e) {
@@ -863,7 +920,7 @@ class ErrorVault_Security_Scanner {
                                 $this->plugin_modified[$slug][] = $plugin_rel;
                             }
                         } elseif ($is_php) {
-                            $this->plugin_unexpected[] = $slug . '/' . $plugin_rel;
+                            $this->plugin_unexpected[] = $rel;
                         }
                     }
                 }
@@ -1028,6 +1085,94 @@ class ErrorVault_Security_Scanner {
             $this->add_finding('config:file_edit', 'config', 'Theme/plugin file editor is enabled', 'info', false,
                 'Anyone with an admin login can edit PHP files from wp-admin, which turns a stolen password into code execution.',
                 "Add define('DISALLOW_FILE_EDIT', true); to wp-config.php.");
+        }
+    }
+
+    /* --------------------------- Database ---------------------------- */
+
+    /**
+     * Injected scripts in posts/options, hijacked active_plugins entries and
+     * cron events carrying code. Reported only; content is cleaned by hand.
+     */
+    private function check_database() {
+        global $wpdb;
+
+        // active_plugins entries pointing outside wp-content/plugins load arbitrary PHP on every request.
+        $missing = array();
+        $hijacked = array();
+        foreach ((array) get_option('active_plugins', array()) as $entry) {
+            $entry = (string) $entry;
+            if (false !== strpos($entry, '..') || !preg_match('/\.php$/i', $entry)) {
+                $hijacked[] = $entry;
+            } elseif (!file_exists(WP_PLUGIN_DIR . '/' . $entry)) {
+                $missing[] = $entry;
+            }
+        }
+        if (!empty($hijacked)) {
+            $this->add_finding('db:active_plugins:' . md5(implode('|', $hijacked)), 'database', 'Hijacked active_plugins setting', 'critical', true,
+                'The active_plugins option loads files from outside wp-content/plugins, a known trick for running a backdoor on every request.',
+                'Remove these entries from the active_plugins option (wp option get active_plugins) and delete the files they point to.',
+                array('files' => $hijacked));
+        }
+        if (!empty($missing)) {
+            $this->add_finding('db:active_plugins_missing', 'database', 'Active plugins that no longer exist', 'info', false,
+                'These entries point at plugins that were deleted. Harmless; WordPress clears them when you open the Plugins screen.',
+                null, array('files' => $missing));
+        }
+
+        $js = '/eval\s*\(\s*(?:atob|unescape|decodeURIComponent|String\.fromCharCode)|document\.write\s*\(\s*(?:unescape|atob)|String\.fromCharCode\s*\((?:\s*\d+\s*,){30,}|<script[^>]+src=["\']?https?:\/\/\d{1,3}(?:\.\d{1,3}){3}|\beval\s*\(\s*(?:base64_decode|gzinflate)/i';
+        $items = array();
+
+        $posts = $wpdb->get_results(
+            "SELECT ID, post_type, post_title, post_content FROM {$wpdb->posts}
+             WHERE post_status IN ('publish','draft','private','future','pending')
+               AND post_type NOT IN ('revision','customize_changeset','oembed_cache')
+               AND (post_content LIKE '%<script%' OR post_content LIKE '%eval(%' OR post_content LIKE '%fromCharCode%')
+             LIMIT 500"
+        );
+        foreach ((array) $posts as $post) {
+            if (count($items) < self::MAX_LIST && preg_match($js, $post->post_content, $m)) {
+                $items[] = array('type' => 'post', 'id' => (int) $post->ID, 'title' => wp_strip_all_tags($post->post_title) . ' (' . $post->post_type . ')', 'reason' => substr($m[0], 0, 80));
+            }
+        }
+
+        $options = $wpdb->get_results(
+            "SELECT option_name, option_value FROM {$wpdb->options}
+             WHERE option_name NOT LIKE '%\\_transient\\_%'
+               AND (option_value LIKE '%<script%' OR option_value LIKE '%eval(%' OR option_value LIKE '%fromCharCode%' OR option_value LIKE '%base64_decode%')
+             LIMIT 500"
+        );
+        foreach ((array) $options as $option) {
+            if (count($items) < self::MAX_LIST && preg_match($js, $option->option_value, $m)) {
+                $items[] = array('type' => 'option', 'id' => $option->option_name, 'title' => $option->option_name, 'reason' => substr($m[0], 0, 80));
+            }
+        }
+
+        if (!empty($items)) {
+            $this->add_finding('db:injected:' . md5(wp_json_encode($items)), 'database', 'Injected scripts in the database', 'critical', true,
+                sprintf('%d post(s)/setting(s) contain obfuscated JavaScript or PHP typical of malware injections (visitor redirects, spam, card skimmers).', count($items)),
+                'Edit each item and remove the injected code. For settings, use WP-CLI (wp option get/update) or phpMyAdmin.',
+                array('items' => $items));
+        }
+
+        // WP-Cron events that carry code in their arguments can re-infect the site after cleanup.
+        $cron_hits = array();
+        foreach ((array) _get_cron_array() as $hooks) {
+            foreach ((array) $hooks as $hook => $events) {
+                foreach ((array) $events as $event) {
+                    $args = isset($event['args']) ? maybe_serialize($event['args']) : '';
+                    if (is_string($args) && preg_match('/eval\s*\(|base64_decode|gzinflate|<\?php|assert\s*\(/i', $args)) {
+                        $cron_hits[] = $hook;
+                    }
+                }
+            }
+        }
+        if (!empty($cron_hits)) {
+            $cron_hits = array_values(array_unique($cron_hits));
+            $this->add_finding('db:cron:' . md5(implode('|', $cron_hits)), 'database', 'Scheduled tasks carrying code', 'critical', true,
+                sprintf('%d WP-Cron event(s) have PHP or obfuscated code in their arguments, a common way to re-infect a site after cleanup.', count($cron_hits)),
+                'Delete these events (wp cron event delete <hook>) and find the code that schedules them.',
+                array('files' => $cron_hits));
         }
     }
 

@@ -2,6 +2,21 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.7.0] - 2026-09-10
+
+### Added
+- **One-click cleanup from the ErrorVault dashboard.** Actions are queued in the portal and run on the site's next check-in (within 5 minutes), followed by an automatic rescan:
+  - Quarantine flagged files or folders. Files are copied (folders zipped) into a non-executable quarantine outside the web root where possible, and can be restored.
+  - Remove a malicious or unknown plugin (deactivate + quarantine).
+  - Reinstall a modified plugin from WordPress.org (same version only).
+  - Update or reinstall WordPress core from WordPress.org.
+  - Delete a rogue administrator, reassigning their content to another admin.
+  - Rotate the security keys/salts in `wp-config.php`, with a restorable backup, and log out all users.
+  - Remove `active_plugins` entries that point outside the plugins folder.
+- Safety rails, enforced on the site: `wp-config.php`, genuine core files, the active theme, top-level folders, ErrorVault itself and anything outside the install are never quarantined, and the last administrator can't be deleted. Nothing sent by ErrorVault is ever written to disk or executed. Turn this off under **Settings → ErrorVault → Remote Cleanup** or with `define('ERRORVAULT_DISABLE_REMOTE_ACTIONS', true);`.
+- **Database checks** in the security scan: obfuscated scripts injected into posts or options, `active_plugins` entries that load files from outside the plugins folder, and WP-Cron events carrying code.
+- `ERRORVAULT_API_BASE` constant for developing against a local portal.
+
 ## [1.6.0] - 2026-09-10
 
 ### Added

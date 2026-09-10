@@ -96,6 +96,9 @@ class ErrorVault_Admin {
         $sanitized['request_spike_threshold'] = isset($input['request_spike_threshold']) ? (float)$input['request_spike_threshold'] : 3.0;
         $sanitized['alert_cooldown'] = isset($input['alert_cooldown']) ? absint($input['alert_cooldown']) : 300;
 
+        // Stored as an opt-out so existing installs keep remote cleanup enabled.
+        $sanitized['disable_remote_actions'] = empty($input['allow_remote_actions']);
+
         return $sanitized;
     }
 
@@ -580,6 +583,22 @@ class ErrorVault_Admin {
                                         <span style="color: #dc3232;">✗ <?php _e('Your WordPress version is vulnerable and the virtual patch is disabled. Update WordPress now.', 'errorvault'); ?></span>
                                     <?php else: ?>
                                         <span style="color: #46b450;">✓ <?php _e('This WordPress version is not affected', 'errorvault'); ?></span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="font-weight: 600;"><?php _e('Remote Cleanup', 'errorvault'); ?></td>
+                                <td>
+                                    <?php if (defined('ERRORVAULT_DISABLE_REMOTE_ACTIONS') && ERRORVAULT_DISABLE_REMOTE_ACTIONS): ?>
+                                        <input type="hidden" name="errorvault_settings[allow_remote_actions]" value="<?php echo empty($settings['disable_remote_actions']) ? '1' : ''; ?>">
+                                        <span style="color: #666;"><?php _e('Disabled by ERRORVAULT_DISABLE_REMOTE_ACTIONS in wp-config.php', 'errorvault'); ?></span>
+                                    <?php else: ?>
+                                        <label>
+                                            <input type="checkbox" name="errorvault_settings[allow_remote_actions]" value="1"
+                                                <?php checked(empty($settings['disable_remote_actions'])); ?>>
+                                            <?php _e('Allow cleanup actions requested from the ErrorVault dashboard', 'errorvault'); ?>
+                                        </label>
+                                        <p class="description"><?php _e('Quarantine flagged files (restorable), remove malicious plugins, reinstall plugins/core from WordPress.org, delete rogue admins, rotate salts. Nothing sent by ErrorVault is ever run as code.', 'errorvault'); ?></p>
                                     <?php endif; ?>
                                 </td>
                             </tr>
