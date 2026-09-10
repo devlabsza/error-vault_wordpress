@@ -2,6 +2,15 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.7.3] - 2026-09-10
+
+### Fixed
+- **Updates always reported "failed" and could leave the plugin deactivated.** WordPress passes the install folder with a trailing slash and the updater compared it without one, so every update installed the files, moved them aside, "restored" them and reported an error. When the update was started from wp-admin, WordPress then left the plugin inactive. The comparison is now path-normalised.
+  - Release zips are now published as `error-vault-wordpress.zip` (same `errorvault-wordpress` folder inside), so sites still on ≤1.7.2 update through their working fallback path instead of the broken one.
+- **Fatal error "Call to a member function get_queried_object() on null".** The error reporter assumed WordPress was fully loaded. When another plugin or theme hit a fatal error early in the page load, the reporter crashed as well and hid the real error. Every step of collecting error context is now guarded, and a failure inside the reporter can never replace the error it's reporting.
+- Uncaught exceptions are now written to the PHP error log with an HTTP 500, instead of an empty 200 page.
+- **Security scan flagged `wp-includes/version.php` as a modified core file** on sites whose language differs from their WordPress package's (e.g. an en_ZA package with the site set to English). Checksums now follow the installed package's language, as WordPress core does. `version.php` is only flagged if it contains anything other than version assignments.
+
 ## [1.7.2] - 2026-09-10
 
 ### Changed

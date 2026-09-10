@@ -198,18 +198,21 @@ class ErrorVault_Updater {
             return $result;
         }
 
-        $proper_destination = WP_PLUGIN_DIR . '/errorvault-wordpress';
+        $proper_destination = untrailingslashit(wp_normalize_path(WP_PLUGIN_DIR . '/errorvault-wordpress'));
+        $current_destination = untrailingslashit(wp_normalize_path($result['destination']));
 
         error_log('[ErrorVault Updater] After install - Current destination: ' . $result['destination']);
         error_log('[ErrorVault Updater] After install - Proper destination: ' . $proper_destination);
 
-        // Properly named asset extracted straight into place — nothing to do.
-        if ($result['destination'] === $proper_destination) {
+        // Properly named asset extracted straight into place: nothing to do.
+        // (WordPress passes the destination with a trailing slash, so compare
+        // normalised paths; comparing raw strings made every update "fail".)
+        if ($current_destination === $proper_destination) {
             $result['destination_name'] = 'errorvault-wordpress';
             return $result;
         }
 
-        if (!$wp_filesystem->exists($result['destination'])) {
+        if (!$wp_filesystem->exists($current_destination)) {
             $this->store_update_error('Extracted update folder was not found on disk.');
             return new WP_Error('ev_missing_source', __('Error-Vault update failed: extracted folder is missing.', 'errorvault'));
         }
@@ -226,11 +229,11 @@ class ErrorVault_Updater {
             $backup_created = true;
         }
 
-        if ($wp_filesystem->move($result['destination'], $proper_destination)) {
+        if ($wp_filesystem->move($current_destination, $proper_destination)) {
             if ($backup_created) {
                 $wp_filesystem->delete($backup_destination, true);
             }
-            $result['destination'] = $proper_destination;
+            $result['destination'] = trailingslashit($proper_destination);
             $result['destination_name'] = 'errorvault-wordpress';
             return $result;
         }
@@ -300,10 +303,13 @@ class ErrorVault_Updater {
             return false;
         }
 
-        // Look for errorvault-wordpress.zip asset
-        foreach ($release->assets as $asset) {
-            if ($asset->name === 'errorvault-wordpress.zip') {
-                return $asset->browser_download_url;
+        // Releases from 1.7.3 ship "error-vault-wordpress.zip" (renamed so that
+        // older versions' updaters take their working zipball path instead).
+        foreach (array('error-vault-wordpress.zip', 'errorvault-wordpress.zip') as $name) {
+            foreach ($release->assets as $asset) {
+                if ($asset->name === $name) {
+                    return $asset->browser_download_url;
+                }
             }
         }
 

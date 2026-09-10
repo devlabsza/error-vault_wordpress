@@ -424,8 +424,8 @@ class ErrorVault_Security_Actions {
     private static function core_checksums() {
         if (null === self::$core_checksums) {
             require_once ABSPATH . 'wp-admin/includes/update.php';
-            $version = get_bloginfo('version');
-            $checksums = get_core_checksums($version, get_locale() ? get_locale() : 'en_US');
+            $version = ErrorVault_Security_Scanner::installed_wp_version();
+            $checksums = get_core_checksums($version, ErrorVault_Security_Scanner::installed_wp_package_locale());
             if (!is_array($checksums)) {
                 $checksums = get_core_checksums($version, 'en_US');
             }

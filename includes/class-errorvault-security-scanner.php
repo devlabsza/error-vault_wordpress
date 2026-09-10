@@ -100,6 +100,43 @@ class ErrorVault_Security_Scanner {
         return get_bloginfo('version');
     }
 
+    /**
+     * Language of the installed WordPress package (e.g. en_ZA), from
+     * $wp_local_package in version.php. This, not the site's display language,
+     * decides which files are on disk, and it's what core uses for checksums.
+     */
+    public static function installed_wp_package_locale() {
+        $contents = @file_get_contents(ABSPATH . WPINC . '/version.php');
+        if ($contents && preg_match('/\$wp_local_package\s*=\s*[\'"]([A-Za-z_]+)[\'"]/', $contents, $m)) {
+            return $m[1];
+        }
+        return 'en_US';
+    }
+
+    /**
+     * version.php legitimately differs between packages/hosts. Accept it as long
+     * as it contains nothing but variable assignments of plain values; anything
+     * else (function calls, includes, eval...) means it was tampered with.
+     */
+    public static function version_php_is_benign($path) {
+        $code = @file_get_contents($path);
+        if (!$code || !function_exists('token_get_all')) {
+            return false;
+        }
+
+        $allowed = array(T_OPEN_TAG, T_WHITESPACE, T_COMMENT, T_DOC_COMMENT, T_VARIABLE, T_CONSTANT_ENCAPSED_STRING, T_LNUMBER, T_DNUMBER, T_ARRAY, T_DOUBLE_ARROW);
+        foreach (token_get_all($code) as $token) {
+            if (is_array($token)) {
+                if (!in_array($token[0], $allowed, true)) {
+                    return false;
+                }
+            } elseif (!in_array($token, array('=', ';', ',', '(', ')', '[', ']'), true)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public static function is_wp2shell_vulnerable($version = null) {
         $v = self::normalize_version($version ? $version : get_bloginfo('version'));
 
@@ -726,8 +763,8 @@ class ErrorVault_Security_Scanner {
     /* ----------------------------- Core ------------------------------ */
 
     private function check_core_files($wp_version) {
-        $locale = get_locale();
-        $checksums = get_core_checksums($wp_version, $locale ? $locale : 'en_US');
+        $locale = self::installed_wp_package_locale();
+        $checksums = get_core_checksums($wp_version, $locale);
         if (!is_array($checksums) && 'en_US' !== $locale) {
             $checksums = get_core_checksums($wp_version, 'en_US');
         }
@@ -763,6 +800,10 @@ class ErrorVault_Security_Scanner {
             }
             $checked++;
             if (!in_array($hash, (array) $md5, true)) {
+                // version.php differs between language packages; only flag real code in it.
+                if ('wp-includes/version.php' === $file && self::version_php_is_benign($full)) {
+                    continue;
+                }
                 $modified[] = $file;
             }
             if (0 === $checked % 500 && $this->out_of_time()) {

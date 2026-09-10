@@ -17,17 +17,21 @@ jobs:
           mkdir -p /tmp/errorvault-wordpress
           rsync -av --exclude='.git' --exclude='.github' --exclude='node_modules' ./ /tmp/errorvault-wordpress/
       
+      # The folder inside stays "errorvault-wordpress" (so manual uploads replace the
+      # installed plugin). The asset is named error-vault-wordpress.zip on purpose:
+      # plugin <= 1.7.2 only looks for "errorvault-wordpress.zip" and its handling of
+      # that asset is buggy, so it must fall back to its (working) zipball path.
       - name: Create zip file
         run: |
           cd /tmp
-          zip -r errorvault-wordpress.zip errorvault-wordpress
-      
+          zip -r error-vault-wordpress.zip errorvault-wordpress
+
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ github.event.release.upload_url }}
-          asset_path: /tmp/errorvault-wordpress.zip
-          asset_name: errorvault-wordpress.zip
+          asset_path: /tmp/error-vault-wordpress.zip
+          asset_name: error-vault-wordpress.zip
           asset_content_type: application/zip

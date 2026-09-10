@@ -60,46 +60,27 @@ class ErrorVault_Error_Handler {
     }
 
     /**
+     * True while we're building/sending a report, so an error raised by the
+     * reporting code itself can't recurse back into the handler.
+     */
+    private $reporting = false;
+
+    /**
      * Handle PHP errors
      */
     public function handle_error($errno, $errstr, $errfile, $errline) {
         // Check if error reporting is turned off
-        if (!(error_reporting() & $errno)) {
+        if (!(error_reporting() & $errno) || $this->reporting) {
             return false;
         }
 
         $severity = $this->get_severity($errno);
 
-        // Check if we should log this severity level
-        if (!$this->should_log($severity)) {
-            // Call previous error handler
-            if ($this->previous_error_handler) {
-                return call_user_func($this->previous_error_handler, $errno, $errstr, $errfile, $errline);
-            }
-            return false;
+        if ($this->should_log($severity) && !$this->is_excluded($errstr)) {
+            $this->report(function () use ($errstr, $severity, $errfile, $errline) {
+                $this->log_error($this->build_error_data($errstr, $severity, $errfile, $errline, $this->get_stack_trace()));
+            });
         }
-
-        // Check if message matches exclude patterns
-        if ($this->is_excluded($errstr)) {
-            return false;
-        }
-
-        $error_data = array(
-            'message' => $errstr,
-            'severity' => $severity,
-            'file' => $errfile,
-            'line' => $errline,
-            'stack_trace' => $this->get_stack_trace(),
-            'context' => $this->get_context(),
-            'php_version' => PHP_VERSION,
-            'wp_version' => get_bloginfo('version'),
-            'url' => $this->get_current_url(),
-            'request_method' => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : null,
-            'ip_address' => $this->get_client_ip(),
-            'user_agent' => isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 500) : null,
-        );
-
-        $this->log_error($error_data);
 
         // Call previous error handler if exists
         if ($this->previous_error_handler) {
@@ -113,26 +94,27 @@ class ErrorVault_Error_Handler {
      * Handle uncaught exceptions
      */
     public function handle_exception($exception) {
-        $error_data = array(
-            'message' => $exception->getMessage(),
-            'severity' => 'critical',
-            'file' => $exception->getFile(),
-            'line' => $exception->getLine(),
-            'stack_trace' => $exception->getTraceAsString(),
-            'context' => $this->get_context(),
-            'php_version' => PHP_VERSION,
-            'wp_version' => get_bloginfo('version'),
-            'url' => $this->get_current_url(),
-            'request_method' => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : null,
-            'ip_address' => $this->get_client_ip(),
-            'user_agent' => isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 500) : null,
-        );
+        $this->report(function () use ($exception) {
+            $this->log_error($this->build_error_data(
+                $exception->getMessage(),
+                'critical',
+                $exception->getFile(),
+                $exception->getLine(),
+                $exception->getTraceAsString()
+            ));
+        });
 
-        $this->log_error($error_data);
-
-        // Call previous exception handler
         if ($this->previous_exception_handler) {
             call_user_func($this->previous_exception_handler, $exception);
+            return;
+        }
+
+        // Nobody else handles it. Don't rethrow (PHP would call this handler
+        // again, in a loop); keep it visible in the PHP error log and fail the
+        // request with a 500 instead of a blank 200.
+        error_log('PHP Fatal error:  Uncaught ' . $exception);
+        if (!headers_sent()) {
+            http_response_code(500);
         }
     }
 
@@ -142,25 +124,48 @@ class ErrorVault_Error_Handler {
     public function handle_shutdown() {
         $error = error_get_last();
 
-        if ($error && in_array($error['type'], array(E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR))) {
-            $error_data = array(
-                'message' => $error['message'],
-                'severity' => 'fatal',
-                'file' => $error['file'],
-                'line' => $error['line'],
-                'stack_trace' => null,
-                'context' => $this->get_context(),
-                'php_version' => PHP_VERSION,
-                'wp_version' => get_bloginfo('version'),
-                'url' => $this->get_current_url(),
-                'request_method' => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : null,
-                'ip_address' => $this->get_client_ip(),
-                'user_agent' => isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 500) : null,
-            );
-
-            // Send immediately for fatal errors
-            $this->api->send_error($error_data);
+        if (!$error || !in_array($error['type'], array(E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR), true)) {
+            return;
         }
+
+        // Send immediately for fatal errors
+        $this->report(function () use ($error) {
+            $this->api->send_error($this->build_error_data($error['message'], 'fatal', $error['file'], $error['line'], null));
+        });
+    }
+
+    /**
+     * Run reporting code without ever letting it break the site: a failure
+     * while reporting must not replace the error being reported.
+     */
+    private function report(callable $callback) {
+        if ($this->reporting) {
+            return;
+        }
+        $this->reporting = true;
+        try {
+            $callback();
+        } catch (Throwable $e) {
+            // Deliberately ignored.
+        }
+        $this->reporting = false;
+    }
+
+    private function build_error_data($message, $severity, $file, $line, $stack_trace) {
+        return array(
+            'message' => $message,
+            'severity' => $severity,
+            'file' => $file,
+            'line' => $line,
+            'stack_trace' => $stack_trace,
+            'context' => $this->get_context(),
+            'php_version' => PHP_VERSION,
+            'wp_version' => isset($GLOBALS['wp_version']) ? $GLOBALS['wp_version'] : null,
+            'url' => $this->get_current_url(),
+            'request_method' => isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : null,
+            'ip_address' => $this->get_client_ip(),
+            'user_agent' => isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 500) : null,
+        );
     }
 
     /**
@@ -283,34 +288,56 @@ class ErrorVault_Error_Handler {
     /**
      * Get additional context
      */
+    /**
+     * Errors can happen at any point of the WordPress boot (before the main
+     * query, the current user or the theme exist), so every section is
+     * guarded and failures just leave that piece of context out.
+     */
     private function get_context() {
         $context = array();
+        $safe = function (callable $fn) {
+            try {
+                return $fn();
+            } catch (Throwable $e) {
+                return null;
+            }
+        };
 
-        // Current user
-        if (function_exists('get_current_user_id') && get_current_user_id()) {
+        // Current user (pluggable functions load late)
+        $user = $safe(function () {
+            if (!function_exists('wp_get_current_user') || !function_exists('get_current_user_id') || !get_current_user_id()) {
+                return null;
+            }
             $user = wp_get_current_user();
-            $context['user'] = array(
-                'id' => $user->ID,
-                'login' => $user->user_login,
-                'email' => $user->user_email,
-            );
+            return array('id' => $user->ID, 'login' => $user->user_login, 'email' => $user->user_email);
+        });
+        if ($user) {
+            $context['user'] = $user;
         }
 
-        // Current page/post
-        if (function_exists('get_queried_object') && $obj = get_queried_object()) {
-            if (isset($obj->ID)) {
-                $context['post_id'] = $obj->ID;
+        // Current page/post: only once WordPress has set up its main query
+        $queried = $safe(function () {
+            global $wp_query;
+            if (!class_exists('WP_Query', false) || !($wp_query instanceof WP_Query)) {
+                return null;
             }
-            if (isset($obj->post_type)) {
-                $context['post_type'] = $obj->post_type;
+            $obj = $wp_query->get_queried_object();
+            return is_object($obj) ? $obj : null;
+        });
+        if ($queried) {
+            if (isset($queried->ID)) {
+                $context['post_id'] = $queried->ID;
+            }
+            if (isset($queried->post_type)) {
+                $context['post_type'] = $queried->post_type;
             }
         }
 
         // Memory usage and limits
-        $context['memory'] = $this->get_memory_info();
+        $context['memory'] = $safe(function () { return $this->get_memory_info(); });
 
         // CPU/Server load
-        $context['server'] = $this->get_server_info();
+        $context['server'] = $safe(function () { return $this->get_server_info(); });
 
         // Request data (sanitized)
         if (!empty($_GET)) {
@@ -321,18 +348,23 @@ class ErrorVault_Error_Handler {
         }
 
         // Active plugins (useful for debugging)
-        if (function_exists('get_option')) {
-            $active_plugins = get_option('active_plugins', array());
-            $context['active_plugins_count'] = count($active_plugins);
+        $count = $safe(function () {
+            return function_exists('get_option') ? count((array) get_option('active_plugins', array())) : null;
+        });
+        if (null !== $count) {
+            $context['active_plugins_count'] = $count;
         }
 
         // Current theme
-        if (function_exists('wp_get_theme')) {
+        $theme = $safe(function () {
+            if (!function_exists('wp_get_theme')) {
+                return null;
+            }
             $theme = wp_get_theme();
-            $context['theme'] = array(
-                'name' => $theme->get('Name'),
-                'version' => $theme->get('Version'),
-            );
+            return array('name' => $theme->get('Name'), 'version' => $theme->get('Version'));
+        });
+        if ($theme) {
+            $context['theme'] = $theme;
         }
 
         return $context;
@@ -487,7 +519,7 @@ class ErrorVault_Error_Handler {
      * Get current URL
      */
     private function get_current_url() {
-        $protocol = is_ssl() ? 'https://' : 'http://';
+        $protocol = (function_exists('is_ssl') && is_ssl()) ? 'https://' : 'http://';
         $host = isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '';
         $uri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
 
