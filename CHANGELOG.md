@@ -2,7 +2,7 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
-## [Unreleased]
+## [1.9.0] - 2026-09-11
 
 ### Security scanner accuracy
 - Verify complete AIOS bootstrap templates and their official-checksum firewall target; verify WP-CLI PHAR bytes against official SHA-512 release checksums. Names and branding are not allowlists.

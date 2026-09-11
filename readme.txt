@@ -4,7 +4,7 @@ Tags: error logging, debugging, error monitoring, php errors, developer tools, s
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.8.1
+Stable tag: 1.9.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -74,6 +74,12 @@ Log in to your Error-Vault portal, add your site, and the API token will be disp
 
 == Changelog ==
 
+= 1.9.0 =
+* Verify AIOS bootstrap and official WP-CLI files using content evidence to reduce false alerts.
+* Improve uploads and root PHP inspection, including double extensions.
+* Inspect suspicious WP-Cron callbacks and arguments and readable system cron entries.
+* Report incomplete scan coverage explicitly and invalidate reviewed-file trust when contents change.
+
 = 1.3.2 =
 * Fixed API endpoint placeholder to match actual portal URL (error-vault.com)
 * Fixed CSS layout issue with settings notification overlapping version badge
@@ -126,6 +132,9 @@ Log in to your Error-Vault portal, add your site, and the API token will be disp
 * Dashboard widget
 
 == Upgrade Notice ==
+
+= 1.9.0 =
+Improves security scan accuracy and adds cron inspection. Run a fresh scan after updating; partial coverage and review findings do not establish that a site is clean.
 
 = 1.3.1 =
 Automatic updates from GitHub! Plugin now checks for new versions and allows one-click updates.
