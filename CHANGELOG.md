@@ -2,6 +2,17 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [Unreleased]
+
+### Security scanner accuracy
+- Verify complete AIOS bootstrap templates and their official-checksum firewall target; verify WP-CLI PHAR bytes against official SHA-512 release checksums. Names and branding are not allowlists.
+- Inspect root PHP even without core checksums, including previously exempt firewall filenames. Ignore signature examples in comments/literal data rather than exempting the scanner itself.
+- Distinguish inert PHP guards and compiler-halted data from executable uploads; inspect double extensions and configured uploads outside wp-content. Upload PHP is a review finding, not a blanket deletion instruction.
+- Review WP-Cron argument patterns and registered callback locations, and readable /etc/crontab and /etc/cron.d entries. Never execute jobs or serialize objects during inspection. State host/user scheduler visibility limits explicitly.
+- Report oversized/unreadable/excluded files and capped checks as partial coverage; do not emit a clean signature pass for incomplete scans. Keep report payloads within the API's 500-finding limit.
+- Bind reviewed-file trust to content hashes so changes to the same filename are flagged again.
+- Add standalone PHP 7.4+ regression tests; fixtures are never executed and are excluded from release packages.
+
 ## [1.8.1] - 2026-09-10
 
 ### Fixed

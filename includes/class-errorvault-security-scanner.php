@@ -21,6 +21,8 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+require_once __DIR__ . '/class-errorvault-security-evidence.php';
+
 class ErrorVault_Security_Scanner {
 
     const POLL_HOOK = 'errorvault_security_poll';
@@ -53,6 +55,10 @@ class ErrorVault_Security_Scanner {
     private $htaccess_uploads = array();
     private $recent_php = array();
     private $findings = array();
+    private $coverage_gaps = array();
+    private $recognized_files = array();
+    private $wp_cli_checksums = null;
+    private $inspected_paths = array();
 
     /* ------------------------------------------------------------------
      * Bootstrapping
@@ -434,10 +440,18 @@ class ErrorVault_Security_Scanner {
         $mu_plugins = $this->collect_mu_plugins();
         $this->check_core_files($wp_version);
         $this->walk_content();
+        $uploads = wp_upload_dir(null, false);
+        $upload_base = isset($uploads['basedir']) ? rtrim(wp_normalize_path($uploads['basedir']), '/') : '';
+        if ($upload_base && $upload_base !== rtrim(wp_normalize_path(WP_CONTENT_DIR), '/') && 0 !== strpos($upload_base, rtrim(wp_normalize_path(WP_CONTENT_DIR), '/') . '/')) {
+            if (is_dir($upload_base) && !is_link($upload_base)) { $this->walk_content($upload_base); }
+            else { $this->coverage_gap('Custom uploads directory unavailable or linked'); }
+        }
         $this->check_root_files();
         $this->check_config();
         $this->check_database();
+        $this->check_scheduled_tasks();
         $this->build_file_findings();
+        $this->limit_findings();
 
         foreach ($plugins as &$plugin) {
             if (!empty($this->plugin_modified[$plugin['slug']])) {
@@ -461,6 +475,8 @@ class ErrorVault_Security_Scanner {
                 'entries_walked' => $this->entries,
                 'duration_ms' => (int) round((microtime(true) - $started) * 1000),
                 'truncated' => $this->truncated,
+                'coverage_gaps' => $this->coverage_gaps,
+                'system_cron_scope' => 'readable /etc/crontab and /etc/cron.d only; user crontabs, systemd timers and hosting schedulers not inspected',
                 'core_checksums' => $this->core_status,
                 'plugins_verified' => count($this->plugin_checksums),
                 'remote_actions' => ErrorVault_Security_Actions::enabled(),
@@ -491,7 +507,26 @@ class ErrorVault_Security_Scanner {
         if ($details) {
             $finding['details'] = $details;
         }
+        foreach ($this->findings as $index => $existing) {
+            if ($existing['key'] === $key) {
+                $rank = array('critical' => 0, 'warning' => 1, 'info' => 2, 'pass' => 3);
+                if ($rank[$status] < $rank[$existing['status']]) { $this->findings[$index] = $finding; }
+                return;
+            }
+        }
         $this->findings[] = $finding;
+    }
+
+    /** The report API accepts at most 500 findings; keep strongest evidence first. */
+    private function limit_findings() {
+        if (count($this->findings) <= 500) { return; }
+        $this->coverage_gap('Finding list exceeded report limit; strongest 499 retained');
+        $this->findings = array_values(array_filter($this->findings, function ($finding) { return 'files:truncated' !== $finding['key'] && 'files:clean' !== $finding['key']; }));
+        $rank = array('critical' => 0, 'warning' => 1, 'info' => 2, 'pass' => 3);
+        usort($this->findings, function ($a, $b) use ($rank) { return $rank[$a['status']] <=> $rank[$b['status']]; });
+        $this->findings = array_slice($this->findings, 0, 499);
+        $this->add_finding('files:truncated', 'files', 'Scan report was limited', 'warning', false,
+            'The report reached its finding limit. Strongest findings are retained; further findings require server-side investigation.', null, array('reasons' => $this->coverage_gaps));
     }
 
     private function relative($path) {
@@ -774,6 +809,7 @@ class ErrorVault_Security_Scanner {
 
         if (!is_array($checksums) || empty($checksums)) {
             $this->core_status = 'unavailable';
+            $this->coverage_gap('Official core checksums unavailable');
             $this->add_finding('core:checksums_unavailable', 'core', 'Core file verification', 'info', false,
                 'Could not download official checksums for WordPress ' . $wp_version . ' from api.wordpress.org, so core files were not verified.');
             return;
@@ -799,6 +835,7 @@ class ErrorVault_Security_Scanner {
             }
             $hash = @md5_file($full);
             if (false === $hash) {
+                $this->coverage_gap('Core file unreadable: ' . $file);
                 continue;
             }
             $checked++;
@@ -809,7 +846,7 @@ class ErrorVault_Security_Scanner {
                 }
                 $modified[] = $file;
             }
-            if (0 === $checked % 500 && $this->out_of_time()) {
+            if (0 === $checked % 50 && $this->out_of_time()) {
                 break;
             }
         }
@@ -821,7 +858,9 @@ class ErrorVault_Security_Scanner {
             try {
                 $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(ABSPATH . $core_dir, FilesystemIterator::SKIP_DOTS));
                 foreach ($it as $file) {
-                    if (!preg_match('/\.ph(p\d?|tml|ar)$/i', $file->getFilename())) {
+                    if (++$this->entries > self::MAX_ENTRIES || $this->out_of_time()) { $this->coverage_gap('Core directory walk limit reached'); break 2; }
+                    if ($file->isLink()) { $this->coverage_gap('Core symlink not followed'); continue; }
+                    if (!self::php_filename($file->getFilename())) {
                         continue;
                     }
                     $rel = $this->relative($file->getPathname());
@@ -831,17 +870,18 @@ class ErrorVault_Security_Scanner {
                     }
                 }
             } catch (Exception $e) {
-                // Unreadable directory; skip.
+                $this->coverage_gap('Core directory unreadable: ' . $core_dir);
             }
         }
 
+        if ($this->truncated && 'unavailable' === $this->core_status) { $this->core_status = 'partial'; }
         if (!empty($modified)) {
             $this->core_status = 'mismatch';
             $this->add_finding('core:modified', 'core', 'Modified WordPress core files', 'critical', true,
                 sprintf('%d core file(s) differ from the official WordPress %s release. Attackers modify core files to hide backdoors.', count($modified), $wp_version),
                 'Reinstall WordPress core (Dashboard, Updates, Re-install version) and check the listed files for injected code first.',
                 array('files' => array_slice($modified, 0, self::MAX_LIST)));
-        } else {
+        } elseif (!$this->truncated && empty($missing)) {
             $this->core_status = 'verified';
             $this->add_finding('core:verified', 'core', 'Core files match official checksums', 'pass', false,
                 sprintf('%s core files verified against WordPress.org.', number_format_i18n($checked)));
@@ -855,61 +895,120 @@ class ErrorVault_Security_Scanner {
         }
 
         if (!empty($missing)) {
+            $this->coverage_gap('Required core files missing');
             $this->add_finding('core:missing', 'core', 'Missing WordPress core files', 'info', false,
-                sprintf('%d core file(s) are missing. Usually harmless, but reinstalling core restores them.', count($missing)),
+                sprintf('%d required core file(s) are missing. Restore them from the official release and investigate unexpected deletion.', count($missing)),
                 null, array('files' => array_slice($missing, 0, self::MAX_LIST)));
         }
     }
 
     private function check_root_files() {
-        if (!is_array($this->core_checksums)) {
-            return;
-        }
-
-        $allowed = array('wp-config.php', 'wordfence-waf.php', 'local-config.php', 'wp-config-local.php');
         $unknown = array();
-        foreach ((array) @scandir(ABSPATH) as $name) {
-            if (!preg_match('/\.ph(p\d?|tml|ar)$/i', $name) || isset($this->core_checksums[$name]) || in_array($name, $allowed, true)) {
-                continue;
-            }
+        $names = @scandir(ABSPATH);
+        if (false === $names) { $this->coverage_gap('WordPress root unreadable'); return; }
+        foreach ($names as $name) {
+            if ($this->out_of_time()) { break; }
+            if (!self::php_filename($name)) { continue; }
             $full = ABSPATH . $name;
-            if (is_file($full)) {
-                $unknown[] = $name;
-                $this->inspect_file($full, $name, (int) @filesize($full), false);
-            }
+            if (!is_file($full)) { continue; }
+            if (is_link($full)) { $this->coverage_gap('Root symlink not followed: ' . $name); continue; }
+            $size = (int) @filesize($full);
+            $recognized = $this->recognized_root_file($full, $name, $size);
+            // Known root names (including firewall/config files) never bypass inspection.
+            $core_verified = isset($this->core_checksums[$name]) && in_array(@md5_file($full), (array) $this->core_checksums[$name], true);
+            if (!$recognized && !$core_verified) { $this->inspect_file($full, $name, $size, true); }
+            $core = is_array($this->core_checksums) && isset($this->core_checksums[$name]);
+            $config = in_array($name, array('wp-config.php', 'local-config.php', 'wp-config-local.php'), true);
+            if (!$recognized && !$core && !$config) { $unknown[] = $name; }
         }
-
         if (!empty($unknown)) {
-            $this->add_finding('root:unknown:' . md5(implode('|', $unknown)), 'files', 'Unknown PHP files in the WordPress root', 'warning', true,
-                sprintf('%d PHP file(s) next to wp-config.php are not part of WordPress. Attackers often drop loaders like wp-l0gin.php or radio.php here.', count($unknown)),
-                'Check each file; delete any you did not add.',
-                array('files' => $unknown));
+            $this->add_finding('root:unknown:' . md5(implode('|', $unknown)), 'files', 'Unverified PHP files in the WordPress root', 'warning', true,
+                sprintf('%d root file(s) are not verified as WordPress core or a recognized tool. Custom loaders can be legitimate; their names alone do not establish safety.', count($unknown)),
+                'Review contents and provenance before changing files. Removing a configured firewall bootstrap can take the site offline.',
+                array('files' => array_slice($unknown, 0, self::MAX_LIST)));
         }
+    }
+
+    private static function php_filename($name) {
+        return (bool) preg_match('/\.(?:php[0-9]*|phtml|phar|pht|inc)(?:\.|$)/i', $name);
+    }
+
+    private function coverage_gap($reason) {
+        $this->truncated = true;
+        if (count($this->coverage_gaps) < self::MAX_LIST && !in_array($reason, $this->coverage_gaps, true)) {
+            $this->coverage_gaps[] = $reason;
+        }
+    }
+
+    private function recognized_root_file($path, $name, $size) {
+        if (isset($this->recognized_files[$path])) { return $this->recognized_files[$path]; }
+        $recognized = false;
+        if ('aios-bootstrap.php' === $name && $size <= 16384) {
+            $uploads = wp_upload_dir(null, false);
+            $target = 'classes/firewall/wp-security-firewall.php';
+            $hashes = isset($this->plugin_checksums['all-in-one-wp-security-and-firewall'][$target])
+                ? $this->plugin_checksums['all-in-one-wp-security-and-firewall'][$target] : array();
+            $target_path = WP_PLUGIN_DIR . '/all-in-one-wp-security-and-firewall/' . $target;
+            $content = @file_get_contents($path);
+            $recognized = false !== $content && !is_link($target_path) && is_file($target_path)
+                && in_array(@md5_file($target_path), $hashes, true)
+                && ErrorVault_Security_Evidence::aios_bootstrap($content, wp_normalize_path(ABSPATH), wp_normalize_path(WP_PLUGIN_DIR), wp_normalize_path($uploads['basedir']));
+        } elseif ('wp-cli.phar' === $name && $size > 0 && $size <= 32 * 1024 * 1024) {
+            // Full-file digest from the official release channel. Never execute/open a PHAR.
+            if (null === $this->wp_cli_checksums) {
+                $this->wp_cli_checksums = array_values(ErrorVault_Security_Evidence::wp_cli_release_hashes());
+                $cached = get_transient('errorvault_wp_cli_sha512');
+                if (is_string($cached) && preg_match('/^[a-f0-9]{128}$/D', $cached)) {
+                    $this->wp_cli_checksums[] = $cached;
+                } else {
+                    $response = wp_remote_get('https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar.sha512', array('timeout' => 10, 'redirection' => 0, 'limit_response_size' => 1024));
+                    if (!is_wp_error($response) && 200 === (int) wp_remote_retrieve_response_code($response)) {
+                        $checksum = trim(wp_remote_retrieve_body($response));
+                        if (preg_match('/^[a-f0-9]{128}$/D', $checksum)) {
+                            $this->wp_cli_checksums[] = $checksum;
+                            set_transient('errorvault_wp_cli_sha512', $checksum, DAY_IN_SECONDS);
+                        }
+                    }
+                }
+            }
+            $recognized = in_array(@hash_file('sha512', $path), $this->wp_cli_checksums, true);
+        }
+        $this->recognized_files[$path] = $recognized;
+        if ($recognized) {
+            $this->files_scanned++;
+            $this->add_finding('files:recognized:' . md5($path), 'files', 'Verified tool: ' . $name, 'info', false,
+                'Verified against the official WP-CLI checksum or a complete AIOS loader template with a checksum-verified firewall target. This verifies this file, not the whole site.');
+        }
+        return $recognized;
     }
 
     /* ------------------------- wp-content walk ----------------------- */
 
-    private function walk_content() {
+    private function walk_content($base = null) {
+        $base = null === $base ? WP_CONTENT_DIR : $base;
         $skip = apply_filters('errorvault_security_scan_skip_dirs', array(
             'node_modules', '.git', 'upgrade-temp-backup', 'updraft', 'ai1wm-backups', 'backups-dup-lite', 'errorvault-backups',
         ));
         $uploads = wp_upload_dir(null, false);
         $uploads_base = wp_normalize_path(isset($uploads['basedir']) ? $uploads['basedir'] : WP_CONTENT_DIR . '/uploads');
         $plugins_base = wp_normalize_path(WP_PLUGIN_DIR);
-        $self = wp_normalize_path(__FILE__);
         $content_patterns = $this->iocs['content_dir_patterns'];
 
         try {
-            $dir = new RecursiveDirectoryIterator(WP_CONTENT_DIR, FilesystemIterator::SKIP_DOTS);
+            $dir = new RecursiveDirectoryIterator($base, FilesystemIterator::SKIP_DOTS);
             $filter = new RecursiveCallbackFilterIterator($dir, function ($current) use ($skip) {
                 if (!$current->isDir()) {
                     return true;
                 }
+                if ($current->isLink() || !is_readable($current->getPathname())) { $this->coverage_gap('Directory unreadable or linked: ' . $this->relative($current->getPathname())); return false; }
                 $name = $current->getFilename();
-                return !in_array($name, $skip, true) && 0 !== strpos($name, 'errorvault-quarantine');
+                $skipped = in_array($name, $skip, true) || 0 === strpos($name, 'errorvault-quarantine');
+                if ($skipped) { $this->coverage_gap('Excluded directory: ' . $this->relative($current->getPathname())); }
+                return !$skipped;
             });
             $it = new RecursiveIteratorIterator($filter, RecursiveIteratorIterator::SELF_FIRST, RecursiveIteratorIterator::CATCH_GET_CHILD);
         } catch (Exception $e) {
+            $this->coverage_gap('Content directory unreadable');
             return;
         }
 
@@ -928,14 +1027,12 @@ class ErrorVault_Security_Scanner {
                 continue;
             }
 
-            if ($file->isLink() || $path === $self) {
-                continue;
-            }
+            if ($file->isLink()) { $this->coverage_gap('Symlink not followed: ' . $this->relative($path)); continue; }
 
             $name = $file->getFilename();
             $rel = $this->relative($path);
             $size = (int) $file->getSize();
-            $is_php = (bool) preg_match('/\.(php\d?|phtml|phar|pht|inc)$/i', $name);
+            $is_php = self::php_filename($name);
             $in_uploads = 0 === strpos($path, $uploads_base . '/');
 
             if ($in_uploads && '.htaccess' === strtolower($name) && $size < 65536) {
@@ -982,7 +1079,8 @@ class ErrorVault_Security_Scanner {
             }
 
             if ($in_uploads && !$this->is_silence_index($path, $name, $size)) {
-                $this->php_in_uploads[] = $rel;
+                if (count($this->php_in_uploads) < self::MAX_LIST) { $this->php_in_uploads[] = $rel; }
+                else { $this->coverage_gap('Uploads finding list capped'); }
             }
 
             if (!$verified) {
@@ -992,33 +1090,34 @@ class ErrorVault_Security_Scanner {
     }
 
     private function is_silence_index($path, $name, $size) {
-        if ('index.php' !== strtolower($name) || $size > 200) {
-            return false;
-        }
-        return false === strpos((string) @file_get_contents($path), '$');
+        if ($size > self::MAX_READ_BYTES) { return false; }
+        $content = @file_get_contents($path);
+        return false !== $content && ErrorVault_Security_Evidence::inert_php($content);
     }
 
     /**
      * Hash + signature check for a single PHP file.
      */
     private function inspect_file($path, $rel, $size, $count = true) {
-        if ($count) {
-            $this->files_scanned++;
-        }
+        if (isset($this->inspected_paths[$path])) { return; }
+        $this->inspected_paths[$path] = true;
         if ($size > self::MAX_READ_BYTES) {
+            $this->coverage_gap('File exceeds content scan limit: ' . $rel);
             return;
         }
 
-        $content = @file_get_contents($path);
-        if (false === $content || '' === $content) {
-            return;
-        }
+        $content = @file_get_contents($path, false, null, 0, self::MAX_READ_BYTES + 1);
+        if (false === $content) { $this->coverage_gap('File unreadable: ' . $rel); return; }
+        if (strlen($content) > self::MAX_READ_BYTES) { $this->coverage_gap('File grew beyond content scan limit: ' . $rel); return; }
+        if ($count) { $this->files_scanned++; }
+        if ('' === $content) { return; }
 
         if (isset($this->ioc_hash_set[hash('sha256', $content)])) {
             $this->ioc_hash_hits[] = $rel;
         }
 
         $hit = self::match_signatures($content, $size);
+        if ($hit && count($this->signature_hits[$hit[0]]) >= self::MAX_LIST) { $this->coverage_gap('Signature finding list capped'); }
         if ($hit && count($this->signature_hits[$hit[0]]) < self::MAX_LIST) {
             $this->signature_hits[$hit[0]][] = array('path' => $rel, 'reason' => $hit[1]);
         }
@@ -1029,36 +1128,52 @@ class ErrorVault_Security_Scanner {
      * Returns array(severity, reason) or null.
      */
     public static function match_signatures($content, $size) {
+        if (ErrorVault_Security_Evidence::inert_php($content)) { return null; }
+        $executable = ErrorVault_Security_Evidence::executable_text($content);
         $critical = array(
             'eval() of a decoded payload' => '/\beval\s*\(\s*(?:@\s*)?(?:base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|hex2bin|convert_uudecode)\s*\(/i',
             'runs shell commands from request input' => '/\b(?:system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec)\s*\(\s*(?:@\s*)?(?:(?:stripslashes|base64_decode|trim|urldecode)\s*\(\s*)?\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b/i',
             'evaluates request input as code' => '/\b(?:eval|assert)\s*\(\s*(?:@\s*)?(?:(?:stripslashes|base64_decode|urldecode)\s*\(\s*)?\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b/i',
             'calls a function named in the request' => '/\$_(?:GET|POST|REQUEST|COOKIE)\s*\[[^\]]{1,64}\]\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)/i',
             'create_function() with request input' => '/create_function\s*\([^)]{0,60}\$_(?:GET|POST|REQUEST|COOKIE)/i',
-            'known webshell marker' => '/\b(?:FilesMan|WSOsetcookie|b374k|r57shell|c99shell|IndoXploit|AnonymousFox)\b/i',
-            'includes a hex-encoded path' => '/\b(?:include|require)(?:_once)?\s*\(?\s*["\'](?:\\\\x[0-9a-fA-F]{2}){4,}/',
         );
         foreach ($critical as $reason => $regex) {
-            if (@preg_match($regex, $content)) {
+            $subject = $executable;
+            if (@preg_match($regex, $subject)) {
                 return array('critical', $reason);
             }
         }
 
+        $tokens = ErrorVault_Security_Evidence::tokens($content);
+        foreach ($tokens as $index => $token) {
+            if (is_array($token) && in_array($token[0], array(T_INCLUDE, T_INCLUDE_ONCE, T_REQUIRE, T_REQUIRE_ONCE), true)) {
+                for ($j = $index + 1; $j < min(count($tokens), $index + 16); $j++) {
+                    $next = $tokens[$j];
+                    if (';' === $next) { break; }
+                    if (!is_array($next) || T_CONSTANT_ENCAPSED_STRING !== $next[0]) { continue; }
+                    if (preg_match('/(?:\\\\x[0-9a-fA-F]{2}){4,}/', $next[1])) { return array('warning', 'includes a hex-encoded path'); }
+                    if (preg_match('/\.(?:ico|png|jpe?g|gif|txt|log)["\']$/i', $next[1])) { return array('warning', 'includes a non-PHP file (image/text)'); }
+                }
+            }
+        }
+        $comment_free = '';
+        foreach ($tokens as $token) { $comment_free .= is_array($token) ? $token[1] : $token; }
         $warning = array(
+            'webshell marker (may be a security signature database)' => '/\b(?:FilesMan|WSOsetcookie|b374k|r57shell|c99shell|IndoXploit|AnonymousFox)\b/i',
             'long hex-escaped string' => '/(?:\\\\x[0-9a-fA-F]{2}){40,}/',
-            'includes a non-PHP file (image/text)' => '/\b(?:include|require)(?:_once)?\s*\(?\s*["\'][^"\'\n]{1,200}\.(?:ico|png|jpe?g|gif|txt|log)["\']/i',
         );
         foreach ($warning as $reason => $regex) {
-            if (@preg_match($regex, $content)) {
+            $subject = 0 === strpos($reason, 'webshell marker') ? $executable : $comment_free;
+            if (@preg_match($regex, $subject)) {
                 return array('warning', $reason);
             }
         }
 
-        if (preg_match('/\b(?:eval|assert|create_function)\s*\(/i', $content) && preg_match('/[A-Za-z0-9+\/=]{3000,}/', $content)) {
+        if (preg_match('/\b(?:eval|assert|create_function)\s*\(/i', $executable) && preg_match('/[A-Za-z0-9+\/=]{3000,}/', $content)) {
             return array('warning', 'eval() alongside a large encoded blob');
         }
 
-        if ($size < 6000 && false !== stripos($content, 'move_uploaded_file') && false !== strpos($content, '$_FILES') && false === strpos($content, 'wp_')) {
+        if ($size < 6000 && false !== stripos($executable, 'move_uploaded_file') && false !== strpos($executable, '$_FILES') && false === strpos($content, 'wp_')) {
             return array('warning', 'standalone file uploader');
         }
 
@@ -1069,29 +1184,28 @@ class ErrorVault_Security_Scanner {
 
     private function check_config() {
         // auto_prepend_file in .user.ini / php.ini / .htaccess is a classic persistence trick.
-        $benign = array('wordfence-waf.php', 'ninjafirewall', 'sucuri', 'malcare', 'bbq-firewall');
         foreach (array('.user.ini', 'php.ini', '.htaccess') as $name) {
             $full = ABSPATH . $name;
             if (!is_file($full) || filesize($full) > 262144) {
                 continue;
             }
             $content = (string) @file_get_contents($full);
+            $content = preg_replace('/^\s*[;#].*$/m', '', $content);
             if (preg_match_all('/(auto_(?:prepend|append)_file)\s*[= ]\s*["\']?([^"\'\r\n]+)/i', $content, $m, PREG_SET_ORDER)) {
                 foreach ($m as $match) {
                     $target = trim($match[2]);
-                    $is_benign = false;
-                    foreach ($benign as $needle) {
-                        if (false !== stripos($target, $needle)) {
-                            $is_benign = true;
-                        }
-                    }
+                    $candidate = $target;
+                    if (false === strpos($candidate, '://') && !preg_match('~^(?:/|[A-Za-z]:[\\/])~', $candidate)) { $candidate = ABSPATH . $candidate; }
+                    $real = realpath($candidate);
+                    $is_benign = $real && $real === realpath(ABSPATH . 'aios-bootstrap.php')
+                        && $this->recognized_root_file($real, 'aios-bootstrap.php', (int) @filesize($real));
                     if ('none' === strtolower($target) || '' === $target) {
                         continue;
                     }
                     $this->add_finding('config:prepend:' . md5($name . $target), 'config', $match[1] . ' set in ' . $name,
                         $is_benign ? 'info' : 'warning', !$is_benign,
-                        sprintf('%s makes PHP load "%s" before every request.%s', $name, $target, $is_benign ? ' This looks like a firewall plugin.' : ' Malware uses this to survive cleanup.'),
-                        $is_benign ? null : 'Confirm this file belongs to a security plugin you run; otherwise remove the directive and the file.');
+                        sprintf('%s makes PHP load "%s" for every request.%s', $name, $target, $is_benign ? ' The complete AIOS loader and its firewall target were verified.' : ' Malware uses this to survive cleanup.'),
+                        $is_benign ? null : 'Review the target contents and plugin provenance. A firewall name is not proof of safety; do not remove a bootstrap without checking its configuration.');
                 }
             }
         }
@@ -1174,6 +1288,7 @@ class ErrorVault_Security_Scanner {
                AND (post_content LIKE '%<script%' OR post_content LIKE '%eval(%' OR post_content LIKE '%fromCharCode%')
              LIMIT 500"
         );
+        if (null === $posts || count($posts) >= 500) { $this->coverage_gap('Database post scan unavailable or capped'); }
         foreach ((array) $posts as $post) {
             if (count($items) < self::MAX_LIST && preg_match($js, $post->post_content, $m)) {
                 $items[] = array('type' => 'post', 'id' => (int) $post->ID, 'title' => wp_strip_all_tags($post->post_title) . ' (' . $post->post_type . ')', 'reason' => substr($m[0], 0, 80));
@@ -1182,10 +1297,11 @@ class ErrorVault_Security_Scanner {
 
         $options = $wpdb->get_results(
             "SELECT option_name, option_value FROM {$wpdb->options}
-             WHERE option_name NOT LIKE '%\\_transient\\_%'
+             WHERE option_name <> 'cron' AND option_name NOT LIKE '%\\_transient\\_%'
                AND (option_value LIKE '%<script%' OR option_value LIKE '%eval(%' OR option_value LIKE '%fromCharCode%' OR option_value LIKE '%base64_decode%')
              LIMIT 500"
         );
+        if (null === $options || count($options) >= 500) { $this->coverage_gap('Database option scan unavailable or capped'); }
         foreach ((array) $options as $option) {
             if (count($items) < self::MAX_LIST && preg_match($js, $option->option_value, $m)) {
                 $items[] = array('type' => 'option', 'id' => $option->option_name, 'title' => $option->option_name, 'reason' => substr($m[0], 0, 80));
@@ -1193,31 +1309,87 @@ class ErrorVault_Security_Scanner {
         }
 
         if (!empty($items)) {
-            $this->add_finding('db:injected:' . md5(wp_json_encode($items)), 'database', 'Injected scripts in the database', 'critical', true,
+            $this->add_finding('db:injected:' . md5(wp_json_encode($items)), 'database', 'Review script patterns in the database', 'warning', true,
                 sprintf('%d post(s)/setting(s) contain obfuscated JavaScript or PHP typical of malware injections (visitor redirects, spam, card skimmers).', count($items)),
-                'Edit each item and remove the injected code. For settings, use WP-CLI (wp option get/update) or phpMyAdmin.',
+                'Review each item in context. Code examples and security-plugin data can match these patterns; remove only confirmed injections.',
                 array('items' => $items));
         }
 
-        // WP-Cron events that carry code in their arguments can re-infect the site after cleanup.
-        $cron_hits = array();
-        foreach ((array) _get_cron_array() as $hooks) {
+    }
+
+    /** Inspect scheduled metadata and callbacks without invoking them. */
+    private function check_scheduled_tasks($system_paths = null) {
+        global $wp_filter;
+        $count = 0;
+        foreach ((array) _get_cron_array() as $timestamp => $hooks) {
             foreach ((array) $hooks as $hook => $events) {
                 foreach ((array) $events as $event) {
-                    $args = isset($event['args']) ? maybe_serialize($event['args']) : '';
-                    if (is_string($args) && preg_match('/eval\s*\(|base64_decode|gzinflate|<\?php|assert\s*\(/i', $args)) {
-                        $cron_hits[] = $hook;
+                    if (++$count > 2000 || $this->out_of_time()) { $this->coverage_gap('WP-Cron inspection limit reached'); break 3; }
+                    $reason = ErrorVault_Security_Evidence::cron_argument_reason(isset($event['args']) ? $event['args'] : array());
+                    if ($reason) {
+                        $this->add_finding('cron:args:' . md5($hook), 'database', 'Review scheduled task: ' . substr($hook, 0, 160), 'warning', true,
+                            'WP-Cron ' . $reason . '. Stored text can be legitimate job data; this alone does not prove code execution.',
+                            'Review the scheduling plugin, callback and arguments before removing the event.', array('hook' => substr($hook, 0, 160), 'next_run' => (int) $timestamp, 'reason' => $reason));
+                    }
+                }
+                $callbacks = isset($wp_filter[$hook]) && isset($wp_filter[$hook]->callbacks) ? $wp_filter[$hook]->callbacks : array();
+                foreach ($callbacks as $group) {
+                    foreach ($group as $entry) {
+                        if (++$count > 4000 || $this->out_of_time()) { $this->coverage_gap('WP-Cron callback limit reached'); break 3; }
+                        $callback = isset($entry['function']) ? $entry['function'] : null;
+                        $reason = null;
+                        if (is_string($callback) && in_array(strtolower(ltrim($callback, '\\')), array('system', 'exec', 'shell_exec', 'passthru', 'assert', 'unserialize'), true)) {
+                            $reason = 'directly invokes a command/code or deserialization function';
+                        }
+                        try {
+                            if (is_array($callback) && count($callback) === 2) {
+                                // Do not autoload classes during inspection.
+                                $class = $callback[0];
+                                $ref = (is_object($class) || (is_string($class) && class_exists($class, false))) ? new ReflectionMethod($class, $callback[1]) : null;
+                            } elseif (is_string($callback) && false !== strpos($callback, '::')) {
+                                list($class, $method) = explode('::', $callback, 2);
+                                $ref = class_exists($class, false) ? new ReflectionMethod($class, $method) : null;
+                            } elseif (is_object($callback) && !($callback instanceof Closure) && method_exists($callback, '__invoke')) {
+                                $ref = new ReflectionMethod($callback, '__invoke');
+                            } elseif ($callback instanceof Closure || (is_string($callback) && function_exists($callback))) { $ref = new ReflectionFunction($callback); }
+                            else { $ref = null; }
+                            $file = $ref ? $ref->getFileName() : false;
+                            $uploads = wp_upload_dir(null, false);
+                            if ($file && 0 === strpos(wp_normalize_path($file), rtrim(wp_normalize_path($uploads['basedir']), '/') . '/')) { $reason = 'loads a callback from the uploads directory'; }
+                            if ($file && is_file($file)) {
+                                $rel = $this->relative($file);
+                                $verified = isset($this->core_checksums[$rel]) && in_array(@md5_file($file), (array) $this->core_checksums[$rel], true);
+                                if (!$verified) { $this->inspect_file($file, $rel, (int) @filesize($file)); }
+                            }
+                        } catch (ReflectionException $e) { $this->coverage_gap('Could not inspect a WP-Cron callback'); }
+                        if ($reason) {
+                            $this->add_finding('cron:callback:' . md5($hook . $reason), 'database', 'Review scheduled callback: ' . substr($hook, 0, 160), 'warning', true,
+                                'This WP-Cron event ' . $reason . '.', 'Verify the callback belongs to an intended plugin or maintenance task.', array('hook' => substr($hook, 0, 160), 'reason' => $reason));
+                        }
                     }
                 }
             }
         }
-        if (!empty($cron_hits)) {
-            $cron_hits = array_values(array_unique($cron_hits));
-            $this->add_finding('db:cron:' . md5(implode('|', $cron_hits)), 'database', 'Scheduled tasks carrying code', 'critical', true,
-                sprintf('%d WP-Cron event(s) have PHP or obfuscated code in their arguments, a common way to re-infect a site after cleanup.', count($cron_hits)),
-                'Delete these events (wp cron event delete <hook>) and find the code that schedules them.',
-                array('files' => $cron_hits));
+        $this->add_finding('cron:scope', 'database', 'Scheduled task coverage', 'info', false,
+            'Inspected WP-Cron events and callbacks registered in this request, plus readable /etc/crontab and /etc/cron.d files. User crontabs, systemd timers, container/hosting schedulers and conditionally registered callbacks are not fully visible to this plugin.');
+        $paths = null === $system_paths ? array_merge(array('/etc/crontab'), (array) glob('/etc/cron.d/*')) : $system_paths;
+        foreach (array_slice($paths, 0, 100) as $path) {
+            if ($this->out_of_time()) { $this->coverage_gap('System cron inspection time limit reached'); break; }
+            if (!is_file($path)) { continue; }
+            if (!is_readable($path) || filesize($path) > 262144) { $this->coverage_gap('System cron file unreadable or oversized'); continue; }
+            $contents = @file_get_contents($path);
+            if (false === $contents) { $this->coverage_gap('System cron read failed'); continue; }
+            foreach (explode("\n", $contents) as $line => $command) {
+                if (preg_match('/^\s*(?:#|$|[A-Za-z_][A-Za-z0-9_]*\s*=)/', $command)) { continue; }
+                $reason = ErrorVault_Security_Evidence::cron_command_reason($command);
+                if ($reason) {
+                    $this->add_finding('cron:system:' . md5($path . ':' . $line), 'config', 'Review system scheduled task', 'warning', true,
+                        'A readable cron entry ' . $reason . '. This may be intentional maintenance; confirm its origin.',
+                        'Review the cron entry on the server. No command was executed or modified.', array('path' => $path, 'line' => $line + 1, 'reason' => $reason));
+                }
+            }
         }
+        if (count($paths) > 100) { $this->coverage_gap('System cron file limit reached'); }
     }
 
     /* --------------------------- Findings ---------------------------- */
@@ -1240,7 +1412,7 @@ class ErrorVault_Security_Scanner {
         if (!empty($this->signature_hits['critical'])) {
             $this->add_finding('files:signatures', 'files', 'Webshell / backdoor code', 'critical', true,
                 sprintf('%d file(s) contain code used by webshells and backdoors.', count($this->signature_hits['critical'])),
-                'Delete these files (or restore them from a clean copy). Legitimate plugins do not ship this code.',
+                'Review the matched executable code against a known-good release. Quarantine or restore confirmed malicious changes; a heuristic match is not conclusive on its own.',
                 array('files' => $this->signature_hits['critical']));
         }
 
@@ -1255,8 +1427,8 @@ class ErrorVault_Security_Scanner {
 
         if (!empty($this->php_in_uploads)) {
             $this->add_finding('files:php_uploads:' . md5(implode('|', $this->php_in_uploads)), 'files', 'PHP files in the uploads folder', 'warning', true,
-                sprintf('%d PHP file(s) are in wp-content/uploads, which should only hold media.', count($this->php_in_uploads)),
-                'Delete them unless a plugin you trust created them, and block PHP execution in uploads.',
+                sprintf('%d executable PHP candidate(s) are in the uploads directory. Plugins may legitimately store PHP caches or configuration here; location alone is not proof of malware.', count($this->php_in_uploads)),
+                'Verify each file against its generating plugin and inspect its contents. Preserve confirmed plugin data; restrict direct PHP execution where compatible with the application.',
                 array('files' => array_slice($this->php_in_uploads, 0, self::MAX_LIST)));
             $this->mark_trustable_last($this->php_in_uploads);
         }
@@ -1283,25 +1455,33 @@ class ErrorVault_Security_Scanner {
         }
 
         if ($this->truncated) {
-            $this->add_finding('files:truncated', 'files', 'Scan was partial', 'info', false,
-                'The scan hit its time or file limit before checking every file. Results above cover what was scanned.');
+            $this->add_finding('files:truncated', 'files', 'Scan was partial', 'warning', false,
+                'Some files or checks could not be inspected (limits, exclusions or read failures). Absence of a finding is not proof of a clean site.', null, array('reasons' => $this->coverage_gaps));
         }
 
-        if (empty($this->ioc_hash_hits) && empty($this->ioc_dir_hits) && empty($this->signature_hits['critical']) && empty($this->signature_hits['warning'])) {
-            $this->add_finding('files:clean', 'files', 'No malware signatures found', 'pass', false,
-                sprintf('%s files checked for webshells, backdoors and known wp2shell malware.', number_format_i18n($this->files_scanned)));
+        if (!$this->truncated && empty($this->ioc_hash_hits) && empty($this->ioc_dir_hits) && empty($this->signature_hits['critical']) && empty($this->signature_hits['warning'])) {
+            $this->add_finding('files:clean', 'files', 'No supported malware signatures found', 'pass', false,
+                sprintf('%s files checked by checksums or supported signatures. This does not establish absence of malware, and does not cover all host schedulers.', number_format_i18n($this->files_scanned)));
         }
     }
 
     /**
      * Let the owner accept an exact set of flagged files in the portal. A new
-     * file changes the set's hash, so it gets flagged again.
+     * file or changed file content changes the set's hash, so it gets flagged again.
      */
     private function mark_trustable_last(array $paths) {
+        $fingerprints = array();
+        foreach ($paths as $path) {
+            $full = ABSPATH . ltrim($path, '/');
+            $hash = is_file($full) ? @hash_file('sha256', $full) : false;
+            if (false === $hash) { return; } // no persistent trust without a content identity
+            $fingerprints[] = $path . ':' . $hash;
+        }
+        sort($fingerprints, SORT_STRING);
         $i = count($this->findings) - 1;
         $this->findings[$i]['trust'] = array(
             'type' => 'files',
-            'value' => md5(implode('|', $paths)),
+            'value' => hash('sha256', implode('|', $fingerprints)),
             'label' => $this->findings[$i]['check'],
         );
     }

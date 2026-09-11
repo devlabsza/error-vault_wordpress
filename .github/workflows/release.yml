@@ -15,7 +15,7 @@ jobs:
       - name: Create properly named plugin folder
         run: |
           mkdir -p /tmp/errorvault-wordpress
-          rsync -av --exclude='.git' --exclude='.github' --exclude='node_modules' ./ /tmp/errorvault-wordpress/
+          rsync -av --exclude='.git' --exclude='.github' --exclude='node_modules' --exclude='tests' ./ /tmp/errorvault-wordpress/
       
       # The folder inside stays "errorvault-wordpress" (so manual uploads replace the
       # installed plugin). The asset is named error-vault-wordpress.zip on purpose:

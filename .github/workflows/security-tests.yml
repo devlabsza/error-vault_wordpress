@@ -1,0 +1,14 @@
+name: Security scanner regression tests
+on: [push, pull_request]
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['7.4', '8.3', '8.5']
+    container: php:${{ matrix.php }}-cli
+    steps:
+      - uses: actions/checkout@v4
+      - run: php -l includes/class-errorvault-security-scanner.php
+      - run: php -l includes/class-errorvault-security-evidence.php
+      - run: php tests/security-scanner-test.php
