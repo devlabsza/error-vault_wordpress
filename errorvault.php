@@ -3,7 +3,7 @@
  * Plugin Name: Error-Vault
  * Plugin URI: https://error-vault.com
  * Description: Send PHP errors to your Error-Vault dashboard for centralized error monitoring.
- * Version: 1.9.0
+ * Version: 1.9.1
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Error-Vault
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('ERRORVAULT_VERSION', '1.9.0');
+define('ERRORVAULT_VERSION', '1.9.1');
 define('ERRORVAULT_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ERRORVAULT_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ERRORVAULT_PLUGIN_BASENAME', plugin_basename(__FILE__));

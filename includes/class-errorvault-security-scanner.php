@@ -943,16 +943,27 @@ class ErrorVault_Security_Scanner {
     private function recognized_root_file($path, $name, $size) {
         if (isset($this->recognized_files[$path])) { return $this->recognized_files[$path]; }
         $recognized = false;
-        if ('aios-bootstrap.php' === $name && $size <= 16384) {
+        $verification_reason = null;
+        if (in_array($name, array('aios-bootstrap.php', 'aios.bootstrap.php'), true) && $size <= 16384) {
             $uploads = wp_upload_dir(null, false);
             $target = 'classes/firewall/wp-security-firewall.php';
             $hashes = isset($this->plugin_checksums['all-in-one-wp-security-and-firewall'][$target])
                 ? $this->plugin_checksums['all-in-one-wp-security-and-firewall'][$target] : array();
             $target_path = WP_PLUGIN_DIR . '/all-in-one-wp-security-and-firewall/' . $target;
             $content = @file_get_contents($path);
+            $verification_reason = empty($hashes) ? 'Official checksums for the installed firewall plugin are unavailable.' : 'The loader template or firewall target does not match the supported official version.';
             $recognized = false !== $content && !is_link($target_path) && is_file($target_path)
                 && in_array(@md5_file($target_path), $hashes, true)
                 && ErrorVault_Security_Evidence::aios_bootstrap($content, wp_normalize_path(ABSPATH), wp_normalize_path(WP_PLUGIN_DIR), wp_normalize_path($uploads['basedir']));
+        } elseif ('wordfence-waf.php' === $name && $size <= 16384) {
+            $target = 'waf/bootstrap.php';
+            $hashes = isset($this->plugin_checksums['wordfence'][$target]) ? $this->plugin_checksums['wordfence'][$target] : array();
+            $target_path = WP_PLUGIN_DIR . '/wordfence/' . $target;
+            $content = @file_get_contents($path);
+            $verification_reason = empty($hashes) ? 'Official checksums for the installed firewall plugin are unavailable.' : 'The loader template or firewall target does not match the supported official version.';
+            $recognized = false !== $content && !is_link($target_path) && is_file($target_path)
+                && in_array(@md5_file($target_path), $hashes, true)
+                && ErrorVault_Security_Evidence::wordfence_bootstrap($content, wp_normalize_path(ABSPATH), wp_normalize_path(WP_PLUGIN_DIR), wp_normalize_path(WP_CONTENT_DIR));
         } elseif ('wp-cli.phar' === $name && $size > 0 && $size <= 32 * 1024 * 1024) {
             // Full-file digest from the official release channel. Never execute/open a PHAR.
             if (null === $this->wp_cli_checksums) {
@@ -971,13 +982,19 @@ class ErrorVault_Security_Scanner {
                     }
                 }
             }
-            $recognized = in_array(@hash_file('sha512', $path), $this->wp_cli_checksums, true);
+            $digest = @hash_file('sha512', $path);
+            $recognized = in_array($digest, $this->wp_cli_checksums, true);
+            $verification_reason = $digest ? 'The full-file SHA-512 does not match the supported official releases. SHA-512: ' . $digest : 'The file could not be read to calculate its SHA-512.';
+        }
+        if (!$recognized && $verification_reason) {
+            $this->add_finding('files:verification:' . md5($path), 'files', 'Tool verification incomplete: ' . $name, 'info', false,
+                $verification_reason . ' This is not proof of malware.', 'Compare with the original tool or plugin package before marking this file as recognised.');
         }
         $this->recognized_files[$path] = $recognized;
         if ($recognized) {
             $this->files_scanned++;
             $this->add_finding('files:recognized:' . md5($path), 'files', 'Verified tool: ' . $name, 'info', false,
-                'Verified against the official WP-CLI checksum or a complete AIOS loader template with a checksum-verified firewall target. This verifies this file, not the whole site.');
+                'Verified against the official WP-CLI checksum or a complete firewall loader template with a checksum-verified firewall target. This verifies this file, not the whole site.');
         }
         return $recognized;
     }
@@ -1078,7 +1095,9 @@ class ErrorVault_Security_Scanner {
                 $this->recent_php[] = $rel;
             }
 
-            if ($in_uploads && !$this->is_silence_index($path, $name, $size)) {
+            $upload_data = $in_uploads && $size <= self::MAX_READ_BYTES
+                && ErrorVault_Security_Evidence::generated_upload_data((string) @file_get_contents($path), substr($path, strlen($uploads_base) + 1));
+            if ($in_uploads && !$upload_data && !$this->is_silence_index($path, $name, $size)) {
                 if (count($this->php_in_uploads) < self::MAX_LIST) { $this->php_in_uploads[] = $rel; }
                 else { $this->coverage_gap('Uploads finding list capped'); }
             }
@@ -1197,14 +1216,15 @@ class ErrorVault_Security_Scanner {
                     $candidate = $target;
                     if (false === strpos($candidate, '://') && !preg_match('~^(?:/|[A-Za-z]:[\\/])~', $candidate)) { $candidate = ABSPATH . $candidate; }
                     $real = realpath($candidate);
-                    $is_benign = $real && $real === realpath(ABSPATH . 'aios-bootstrap.php')
-                        && $this->recognized_root_file($real, 'aios-bootstrap.php', (int) @filesize($real));
+                    $is_benign = $real && in_array(basename($candidate), array('aios-bootstrap.php', 'aios.bootstrap.php', 'wordfence-waf.php'), true)
+                        && $real === realpath(ABSPATH . basename($candidate))
+                        && $this->recognized_root_file($real, basename($candidate), (int) @filesize($real));
                     if ('none' === strtolower($target) || '' === $target) {
                         continue;
                     }
                     $this->add_finding('config:prepend:' . md5($name . $target), 'config', $match[1] . ' set in ' . $name,
                         $is_benign ? 'info' : 'warning', !$is_benign,
-                        sprintf('%s makes PHP load "%s" for every request.%s', $name, $target, $is_benign ? ' The complete AIOS loader and its firewall target were verified.' : ' Malware uses this to survive cleanup.'),
+                        sprintf('%s makes PHP load "%s" for every request.%s', $name, $target, $is_benign ? ' The complete firewall loader and its target were verified.' : ' Malware uses this to survive cleanup.'),
                         $is_benign ? null : 'Review the target contents and plugin provenance. A firewall name is not proof of safety; do not remove a bootstrap without checking its configuration.');
                 }
             }
@@ -1321,10 +1341,12 @@ class ErrorVault_Security_Scanner {
     private function check_scheduled_tasks($system_paths = null) {
         global $wp_filter;
         $count = 0;
+        $events_checked = 0; $callbacks_checked = 0; $system_files_checked = 0;
         foreach ((array) _get_cron_array() as $timestamp => $hooks) {
             foreach ((array) $hooks as $hook => $events) {
                 foreach ((array) $events as $event) {
                     if (++$count > 2000 || $this->out_of_time()) { $this->coverage_gap('WP-Cron inspection limit reached'); break 3; }
+                    $events_checked++;
                     $reason = ErrorVault_Security_Evidence::cron_argument_reason(isset($event['args']) ? $event['args'] : array());
                     if ($reason) {
                         $this->add_finding('cron:args:' . md5($hook), 'database', 'Review scheduled task: ' . substr($hook, 0, 160), 'warning', true,
@@ -1336,6 +1358,7 @@ class ErrorVault_Security_Scanner {
                 foreach ($callbacks as $group) {
                     foreach ($group as $entry) {
                         if (++$count > 4000 || $this->out_of_time()) { $this->coverage_gap('WP-Cron callback limit reached'); break 3; }
+                        $callbacks_checked++;
                         $callback = isset($entry['function']) ? $entry['function'] : null;
                         $reason = null;
                         if (is_string($callback) && in_array(strtolower(ltrim($callback, '\\')), array('system', 'exec', 'shell_exec', 'passthru', 'assert', 'unserialize'), true)) {
@@ -1370,8 +1393,6 @@ class ErrorVault_Security_Scanner {
                 }
             }
         }
-        $this->add_finding('cron:scope', 'database', 'Scheduled task coverage', 'info', false,
-            'Inspected WP-Cron events and callbacks registered in this request, plus readable /etc/crontab and /etc/cron.d files. User crontabs, systemd timers, container/hosting schedulers and conditionally registered callbacks are not fully visible to this plugin.');
         $paths = null === $system_paths ? array_merge(array('/etc/crontab'), (array) glob('/etc/cron.d/*')) : $system_paths;
         foreach (array_slice($paths, 0, 100) as $path) {
             if ($this->out_of_time()) { $this->coverage_gap('System cron inspection time limit reached'); break; }
@@ -1379,6 +1400,7 @@ class ErrorVault_Security_Scanner {
             if (!is_readable($path) || filesize($path) > 262144) { $this->coverage_gap('System cron file unreadable or oversized'); continue; }
             $contents = @file_get_contents($path);
             if (false === $contents) { $this->coverage_gap('System cron read failed'); continue; }
+            $system_files_checked++;
             foreach (explode("\n", $contents) as $line => $command) {
                 if (preg_match('/^\s*(?:#|$|[A-Za-z_][A-Za-z0-9_]*\s*=)/', $command)) { continue; }
                 $reason = ErrorVault_Security_Evidence::cron_command_reason($command);
@@ -1390,6 +1412,9 @@ class ErrorVault_Security_Scanner {
             }
         }
         if (count($paths) > 100) { $this->coverage_gap('System cron file limit reached'); }
+        $this->add_finding('cron:scope', 'database', 'Scheduled task coverage', 'info', false,
+            sprintf('Inspected %d WP-Cron events, %d registered callbacks and %d readable system cron files. User crontabs, systemd timers, container/hosting schedulers and conditionally registered callbacks are not fully visible. Check partial-coverage findings for inspection limits.', $events_checked, $callbacks_checked, $system_files_checked),
+            null, array('events_checked' => $events_checked, 'callbacks_checked' => $callbacks_checked, 'system_files_checked' => $system_files_checked));
     }
 
     /* --------------------------- Findings ---------------------------- */
@@ -1426,7 +1451,7 @@ class ErrorVault_Security_Scanner {
         }
 
         if (!empty($this->php_in_uploads)) {
-            $this->add_finding('files:php_uploads:' . md5(implode('|', $this->php_in_uploads)), 'files', 'PHP files in the uploads folder', 'warning', true,
+            $this->add_finding('files:php_uploads:' . md5(implode('|', $this->php_in_uploads)), 'files', 'Review executable PHP in uploads', 'warning', false,
                 sprintf('%d executable PHP candidate(s) are in the uploads directory. Plugins may legitimately store PHP caches or configuration here; location alone is not proof of malware.', count($this->php_in_uploads)),
                 'Verify each file against its generating plugin and inspect its contents. Preserve confirmed plugin data; restrict direct PHP execution where compatible with the application.',
                 array('files' => array_slice($this->php_in_uploads, 0, self::MAX_LIST)));

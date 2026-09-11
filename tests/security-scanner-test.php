@@ -36,6 +36,8 @@ function put($relative, $content) { $path = ABSPATH . $relative; if (!is_dir(dir
 function has_key($findings, $prefix) { foreach ($findings as $f) { if (0 === strpos($f['key'], $prefix)) { return true; } } return false; }
 function cleanup($dir) { foreach (new FilesystemIterator($dir) as $file) { if ($file->isDir() && !$file->isLink()) { cleanup($file->getPathname()); } else { unlink($file->getPathname()); } } rmdir($dir); }
 try {
+    check(ErrorVault_Security_Evidence::inert_php('{"field":"slider"}'), 'Plain JSON with a PHP suffix is data');
+    check(!ErrorVault_Security_Evidence::inert_php('<? system($_GET["cmd"]); ?>'), 'Short-tag payload is not inert data');
     foreach (array('<?php // Silence is golden.', '<?php /* comment */', '<?php /* guard */ ?>', '<?php exit;', '<?php die();', '<?php __halt_compiler();' . "\n" . '{"rule":"eval(base64_decode(payload))"}') as $source) {
         check(ErrorVault_Security_Evidence::inert_php($source), 'Expected inert guard/data');
         check(null === ErrorVault_Security_Scanner::match_signatures($source, strlen($source)), 'Inert data must not produce a signature');
@@ -70,6 +72,38 @@ try {
     $s = scanner(); check(!invoke($s, 'recognized_root_file', $bp, 'aios-bootstrap.php', filesize($bp)), 'Missing target checksums do not establish trust');
     prop($s, 'plugin_checksums', array('all-in-one-wp-security-and-firewall' => array('classes/firewall/wp-security-firewall.php' => array(str_repeat('0',32)))));
     check(!invoke($s, 'recognized_root_file', $bp, 'aios-bootstrap.php', filesize($bp)), 'Modified target is not trusted');
+    $bp = put('aios.bootstrap.php', $bootstrap);
+    $s = scanner();
+    put('wp-content/plugins/all-in-one-wp-security-and-firewall/classes/firewall/wp-security-firewall.php', '<?php // official fixture');
+    prop($s, 'plugin_checksums', array('all-in-one-wp-security-and-firewall' => array('classes/firewall/wp-security-firewall.php' => array(md5('<?php // official fixture')))));
+    check(invoke($s, 'recognized_root_file', $bp, 'aios.bootstrap.php', filesize($bp)), 'Dotted AIOS name uses complete template and checksum verification');
+    $wf = <<<'PHP'
+<?php if (file_exists(__DIR__.'/wp-content/plugins/wordfence/waf/bootstrap.php')) { define("WFWAF_LOG_PATH", __DIR__.'/wp-content/wflogs/'); include_once __DIR__.'/wp-content/plugins/wordfence/waf/bootstrap.php'; }
+PHP;
+
+    check(ErrorVault_Security_Evidence::wordfence_bootstrap($wf, ABSPATH, WP_PLUGIN_DIR, WP_CONTENT_DIR), 'Official Wordfence generated template accepted');
+    $wpath = put('wordfence-waf.php', $wf);
+    $wt = put('wp-content/plugins/wordfence/waf/bootstrap.php', '<?php // official Wordfence fixture');
+    $wh = array('wordfence' => array('waf/bootstrap.php' => array(md5_file($wt))));
+    $s = scanner(); prop($s, 'plugin_checksums', $wh);
+    check(invoke($s, 'recognized_root_file', $wpath, 'wordfence-waf.php', filesize($wpath)), 'Wordfence verified target accepted');
+    put('.user.ini', 'auto_prepend_file="' . $wpath . '"'); invoke($s, 'check_config');
+    $f = array_values(array_filter(prop($s, 'findings'), function($f) { return 0 === strpos($f['key'], 'config:prepend:'); }));
+    check('info' === $f[0]['status'], 'Verified Wordfence prepend is informational');
+    foreach (array($wf . 'system($_GET["cmd"]);', str_replace('waf/bootstrap.php', 'waf/payload.php', $wf), str_replace('wp-content/wflogs/', 'wp-content/uploads/', $wf)) as $fake) {
+        check(!ErrorVault_Security_Evidence::wordfence_bootstrap($fake, ABSPATH, WP_PLUGIN_DIR, WP_CONTENT_DIR), 'Modified Wordfence loader rejected');
+    }
+    check(!invoke(scanner(), 'recognized_root_file', $wpath, 'wordfence-waf.php', filesize($wpath)), 'Wordfence checksum outage is not trust');
+    put('wp-content/plugins/wordfence/waf/bootstrap.php', '<?php echo "tampered";');
+    $s = scanner(); prop($s, 'plugin_checksums', $wh);
+    check(!invoke($s, 'recognized_root_file', $wpath, 'wordfence-waf.php', filesize($wpath)), 'Modified Wordfence target rejected');
+    $environment = "<?php if (!defined('ABSPATH')) exit; " . '$environment_variable = ' . var_export(json_encode(array('allowed_paths' => array('/srv/site/wp-content/themes'), 'cache_path' => '/srv/site/wp-content/cache/wph/')), true) . '; ?>';
+    check(ErrorVault_Security_Evidence::generated_upload_data($environment, 'wph/environment.php'), 'WP Hide generated JSON environment accepted');
+    check(!ErrorVault_Security_Evidence::generated_upload_data($environment . '<?php system($_POST["cmd"]);', 'wph/environment.php'), 'Appended WP Hide payload rejected');
+    check(!ErrorVault_Security_Evidence::generated_upload_data(str_replace('$environment_variable = ', '$environment_variable = eval(', $environment), 'wph/environment.php'), 'Executable environment assignment rejected');
+    put('wp-content/uploads/wph/environment.php', $environment);
+    $s = scanner(); invoke($s, 'walk_content');
+    check(!in_array('wp-content/uploads/wph/environment.php', prop($s, 'php_in_uploads'), true), 'WP Hide data excluded from location warning');
     $tool = put('wp-cli.phar', 'PHAR checksum fixture — not executable');
     $GLOBALS['ev_remote_checksum'] = hash_file('sha512', $tool);
     check(invoke(scanner(), 'recognized_root_file', $tool, 'wp-cli.phar', filesize($tool)), 'Official full-file checksum accepted');
@@ -111,6 +145,11 @@ try {
     $cron = array_values(array_filter(prop($s, 'findings'), function($f) { return 0 === strpos($f['key'], 'cron:system:'); }));
     check(1 === count($cron) && 2 === $cron[0]['details']['line'], 'System cron comments ignored and source line retained');
     check(false === strpos(json_encode($cron), 'https://example.invalid'), 'Raw cron commands do not leak');
+    $scope = array_values(array_filter(prop($s, 'findings'), function($f) { return 'cron:scope' === $f['key']; }));
+    check(1 === $scope[0]['details']['system_files_checked'], 'Cron coverage counts files actually read');
+    $s = scanner(); prop($s, 'php_in_uploads', array('wp-content/uploads/cache.php')); invoke($s, 'build_file_findings');
+    $upload = array_values(array_filter(prop($s, 'findings'), function($f) { return 0 === strpos($f['key'], 'files:php_uploads:'); }));
+    check(false === $upload[0]['indicator'] && 'warning' === $upload[0]['status'], 'Uploads location requests review without claiming an infection indicator');
     // Trust applies to content, not just a stable filename.
     $s = scanner(); prop($s,'findings',array(array('check'=>'Review file'))); invoke($s,'mark_trustable_last',array('wordfence-waf.php')); $before=prop($s,'findings')[0]['trust']['value'];
     put('wordfence-waf.php','<?php echo "changed";'); prop($s,'findings',array(array('check'=>'Review file')));invoke($s,'mark_trustable_last',array('wordfence-waf.php'));check($before!==prop($s,'findings')[0]['trust']['value'],'Changed content invalidates previous trust');

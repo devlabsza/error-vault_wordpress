@@ -4,7 +4,7 @@ Tags: error logging, debugging, error monitoring, php errors, developer tools, s
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.9.0
+Stable tag: 1.9.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -74,6 +74,11 @@ Log in to your Error-Vault portal, add your site, and the API token will be disp
 
 == Changelog ==
 
+= 1.9.1 =
+* Fix Wordfence and AIOS loader recognition and expand official WP-CLI checksums.
+* Recognize WP Hide environment data and avoid treating uploads location alone as an infection indicator.
+* Explain failed tool verification and report actual cron inspection counts.
+
 = 1.9.0 =
 * Verify AIOS bootstrap and official WP-CLI files using content evidence to reduce false alerts.
 * Improve uploads and root PHP inspection, including double extensions.
@@ -132,6 +137,9 @@ Log in to your Error-Vault portal, add your site, and the API token will be disp
 * Dashboard widget
 
 == Upgrade Notice ==
+
+= 1.9.1 =
+Fixes known-tool recognition gaps in 1.9.0. Run a fresh scan after updating. Unverified executable uploads still require review.
 
 = 1.9.0 =
 Improves security scan accuracy and adds cron inspection. Run a fresh scan after updating; partial coverage and review findings do not establish that a site is clean.
