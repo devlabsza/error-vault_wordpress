@@ -109,6 +109,8 @@ function errorvault_activate() {
         'send_immediately' => true,
         'batch_size' => 10,
         'exclude_patterns' => array(),
+        'allow_remote_actions' => false,
+        'disable_remote_actions' => false,
     );
 
     if (!get_option('errorvault_settings')) {

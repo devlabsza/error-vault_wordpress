@@ -45,7 +45,7 @@ try {
     foreach (array('<?php phpinfo();', '<?php system("id");', '<?php echo "hello";', '<?php include "payload.png";', '<?php echo 1; __halt_compiler(); data', '<?php ?>not empty', '<?php ?><?=system("id")?>') as $source) {
         check(!ErrorVault_Security_Evidence::inert_php($source), 'Executable index must not be exempt');
     }
-    foreach (array('<?php eval(base64_decode("payload"));', '<?php system($_POST["cmd"]);', '<?php eval /* inserted comment */ (base64_decode("x"));', '<?php $_GET["f"]($_POST["x"]);') as $source) {
+    foreach (array('<?php eval(base64_decode("payload"));', '<?php system($_POST["cmd"]);', '<?php eval /* inserted comment */ (base64_decode("x"));', '<?php $_GET["f"]($_POST["x"]);', '<?php $cmd = $_POST["cmd"]; system($cmd);', '<?php $f = $_REQUEST["f"]; $f($_POST["x"]);') as $source) {
         $hit = ErrorVault_Security_Scanner::match_signatures($source, strlen($source));
         check($hit && 'critical' === $hit[0], 'Executable signature must remain detected');
     }

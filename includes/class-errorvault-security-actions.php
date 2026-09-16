@@ -55,7 +55,7 @@ class ErrorVault_Security_Actions {
             return false;
         }
         $settings = get_option('errorvault_settings', array());
-        return empty($settings['disable_remote_actions']);
+        return !empty($settings['allow_remote_actions']) && empty($settings['disable_remote_actions']);
     }
 
     /* ------------------------------------------------------------------

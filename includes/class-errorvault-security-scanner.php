@@ -151,7 +151,7 @@ class ErrorVault_Security_Scanner {
     }
 
     public static function virtual_patch_active() {
-        return self::is_wp2shell_vulnerable() && apply_filters('errorvault_wp2shell_virtual_patch', true);
+        return self::is_wp2shell_vulnerable(self::installed_wp_version()) && apply_filters('errorvault_wp2shell_virtual_patch', true);
     }
 
     /**
@@ -177,7 +177,7 @@ class ErrorVault_Security_Scanner {
     }
 
     public static function vulnerable_core_notice() {
-        if (!current_user_can('update_core') || !self::is_wp2shell_vulnerable()) {
+        if (!current_user_can('update_core') || !self::is_wp2shell_vulnerable(self::installed_wp_version())) {
             return;
         }
 
@@ -185,7 +185,7 @@ class ErrorVault_Security_Scanner {
         printf(
             /* translators: %s: WordPress version */
             esc_html__('WordPress %s is affected by wp2shell (CVE-2026-63030), a vulnerability that is being actively exploited to take over sites. Update WordPress now.', 'errorvault'),
-            esc_html(get_bloginfo('version'))
+            esc_html(self::installed_wp_version())
         );
         if (self::virtual_patch_active()) {
             echo ' ' . esc_html__('Until then, Error-Vault is blocking anonymous requests to the REST batch endpoint.', 'errorvault');
@@ -438,6 +438,8 @@ class ErrorVault_Security_Scanner {
         $admins = $this->collect_admins();
         $plugins = $this->collect_plugins();
         $mu_plugins = $this->collect_mu_plugins();
+        $themes = $this->collect_themes();
+        $this->check_dropins();
         $this->check_core_files($wp_version);
         $this->walk_content();
         $uploads = wp_upload_dir(null, false);
@@ -469,6 +471,7 @@ class ErrorVault_Security_Scanner {
             'admins' => $admins,
             'plugins' => $plugins,
             'mu_plugins' => $mu_plugins,
+            'themes' => $themes,
             'findings' => $this->findings,
             'stats' => array(
                 'files_scanned' => $this->files_scanned,
@@ -795,7 +798,110 @@ class ErrorVault_Security_Scanner {
                 'installed_at' => gmdate('Y-m-d H:i:s', (int) @filemtime($full)),
             );
         }
+        $dirs = array();
+        foreach ((array) @scandir(WPMU_PLUGIN_DIR) as $name) {
+            if ('.' === $name || '..' === $name) { continue; }
+            $full = WPMU_PLUGIN_DIR . '/' . $name;
+            if (is_dir($full) && $this->dir_has_php($full)) {
+                $dirs[] = 'wp-content/mu-plugins/' . $name;
+            }
+        }
+        if (!empty($dirs)) {
+            $this->add_finding('plugins:mu_dirs:' . md5(implode('|', $dirs)), 'plugins', 'PHP code in mu-plugin subdirectories', 'warning', true,
+                sprintf('%d mu-plugin subdirector(ies) contain PHP. WordPress only autoloads top-level mu-plugin files; subdirectories are often loaded by a small bootstrap and are easy to miss.', count($dirs)),
+                'Review each directory and the top-level mu-plugin files that load them.',
+                array('files' => array_slice($dirs, 0, self::MAX_LIST)));
+        }
         return $mu;
+    }
+
+    /* ----------------------------- Themes ---------------------------- */
+
+    private function collect_themes() {
+        require_once ABSPATH . 'wp-admin/includes/theme.php';
+
+        $themes = array();
+        $active_stylesheet = get_stylesheet();
+        $active_template = get_template();
+        $theme_roots = array();
+        $inactive_php = array();
+
+        foreach (wp_get_themes(array('errors' => null)) as $stylesheet => $theme) {
+            $dir = wp_normalize_path($theme->get_stylesheet_directory());
+            $theme_roots[] = $dir;
+            $active = in_array($stylesheet, array($active_stylesheet, $active_template), true);
+            $php_count = $this->count_php_files($dir, 3000);
+            $themes[] = array(
+                'stylesheet' => (string) $stylesheet,
+                'name' => wp_strip_all_tags($theme->get('Name')),
+                'version' => (string) $theme->get('Version'),
+                'active' => $active,
+                'parent' => $theme->parent() ? (string) $theme->get_template() : null,
+                'installed_at' => @filemtime($dir) ? gmdate('Y-m-d H:i:s', filemtime($dir)) : null,
+                'php_files' => $php_count,
+            );
+            if (!$active && $php_count > 0) {
+                $inactive_php[] = $this->relative($dir) . ' (' . $php_count . ' PHP files)';
+            }
+        }
+
+        if (!empty($inactive_php)) {
+            $this->add_finding('themes:inactive_php:' . md5(implode('|', $inactive_php)), 'themes', 'Inactive themes contain executable PHP', 'info', false,
+                sprintf('%d inactive theme(s) contain PHP. Inactive themes are not normally loaded, but old themes increase attack surface if a vulnerability or direct file access exists.', count($inactive_php)),
+                'Delete themes you do not use, keeping only the active parent/child theme and one default fallback theme.',
+                array('themes' => array_slice($inactive_php, 0, self::MAX_LIST)));
+        }
+
+        $known_roots = array_fill_keys(array_unique($theme_roots), true);
+        $unknown = array();
+        foreach (array_unique(array_map('wp_normalize_path', (array) glob(get_theme_root() . '/*', GLOB_ONLYDIR))) as $dir) {
+            if (!isset($known_roots[$dir]) && $this->dir_has_php($dir)) {
+                $unknown[] = $this->relative($dir);
+            }
+        }
+        if (!empty($unknown)) {
+            $this->add_finding('themes:unknown_dirs:' . md5(implode('|', $unknown)), 'themes', 'PHP code in unrecognised theme folders', 'warning', true,
+                sprintf('%d folder(s) under the theme directory contain PHP but were not returned by WordPress as installed themes.', count($unknown)),
+                'Inspect and delete anything you do not recognise.',
+                array('files' => array_slice($unknown, 0, self::MAX_LIST)));
+        }
+
+        return $themes;
+    }
+
+    private function count_php_files($dir, $limit = 3000) {
+        if (!is_dir($dir) || is_link($dir)) { return 0; }
+        $walked = 0;
+        $php_count = 0;
+        try {
+            $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
+            foreach ($it as $file) {
+                if (++$walked > $limit) { $this->coverage_gap('Theme PHP count limit reached: ' . $this->relative($dir)); return $php_count; }
+                if ($file->isFile() && self::php_filename($file->getFilename())) { $php_count++; }
+            }
+        } catch (Exception $e) {
+            $this->coverage_gap('Theme directory unreadable: ' . $this->relative($dir));
+            return 0;
+        }
+        return $php_count;
+    }
+
+    private function check_dropins() {
+        $dropins = array('advanced-cache.php', 'object-cache.php', 'db.php', 'db-error.php', 'install.php', 'maintenance.php', 'sunrise.php', 'blog-deleted.php', 'blog-inactive.php', 'blog-suspended.php');
+        $present = array();
+        foreach ($dropins as $name) {
+            $path = WP_CONTENT_DIR . '/' . $name;
+            if (!is_file($path) || is_link($path)) { continue; }
+            $rel = $this->relative($path);
+            $present[] = $rel;
+            $this->inspect_file($path, $rel, (int) @filesize($path));
+        }
+        if (!empty($present)) {
+            $this->add_finding('plugins:dropins:' . md5(implode('|', $present)), 'plugins', 'WordPress drop-in files are present', 'info', false,
+                'Drop-ins load before normal plugins and are powerful persistence points. They can be legitimate for caches, database layers and multisite sunrise handling.',
+                'Verify each drop-in belongs to an active plugin or hosting feature.',
+                array('files' => $present));
+        }
     }
 
     /* ----------------------------- Core ------------------------------ */
@@ -1161,6 +1267,18 @@ class ErrorVault_Security_Scanner {
             if (@preg_match($regex, $subject)) {
                 return array('critical', $reason);
             }
+        }
+
+        // One-hop taint checks catch compact webshells that assign request input
+        // to a variable before invoking a dangerous sink. This intentionally stays
+        // conservative to avoid turning normal validation code into a critical hit.
+        $tainted_var = '\$([A-Za-z_][A-Za-z0-9_]*)';
+        $request_expr = '(?:(?:stripslashes|base64_decode|trim|urldecode)\s*\(\s*)?\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b[^;]{0,160}';
+        if (@preg_match('/' . $tainted_var . '\s*=\s*' . $request_expr . ';.{0,900}\b(?:system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec|eval|assert)\s*\(\s*\$\\1\b/is', $executable)) {
+            return array('critical', 'passes request-derived variable to code/command execution');
+        }
+        if (@preg_match('/' . $tainted_var . '\s*=\s*' . $request_expr . ';.{0,900}\$\\1\s*\(/is', $executable)) {
+            return array('critical', 'calls a request-derived function name');
         }
 
         $tokens = ErrorVault_Security_Evidence::tokens($content);

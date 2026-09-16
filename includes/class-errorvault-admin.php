@@ -106,12 +106,10 @@ class ErrorVault_Admin {
         $sanitized['request_spike_threshold'] = isset($input['request_spike_threshold']) ? (float)$input['request_spike_threshold'] : 3.0;
         $sanitized['alert_cooldown'] = isset($input['alert_cooldown']) ? absint($input['alert_cooldown']) : 300;
 
-        // Stored as an opt-out so existing installs keep remote cleanup enabled.
-        if ($from_form) {
-            $sanitized['disable_remote_actions'] = empty($input['allow_remote_actions']);
-        } else {
-            $sanitized['disable_remote_actions'] = !empty($input['disable_remote_actions']);
-        }
+        // Remote cleanup is powerful, so it is explicit opt-in. The legacy
+        // disable_remote_actions flag is still honoured for wp-config/code saves.
+        $sanitized['allow_remote_actions'] = $checkbox('allow_remote_actions', false);
+        $sanitized['disable_remote_actions'] = !empty($input['disable_remote_actions']);
 
         return $sanitized;
     }
@@ -594,7 +592,7 @@ class ErrorVault_Admin {
                                 <td>
                                     <?php if (ErrorVault_Security_Scanner::virtual_patch_active()): ?>
                                         <span style="color: #f0b849;">⚠ <?php _e('Your WordPress version is vulnerable. Anonymous REST batch requests are being blocked. Update WordPress now.', 'errorvault'); ?></span>
-                                    <?php elseif (ErrorVault_Security_Scanner::is_wp2shell_vulnerable()): ?>
+                                    <?php elseif (ErrorVault_Security_Scanner::is_wp2shell_vulnerable(ErrorVault_Security_Scanner::installed_wp_version())): ?>
                                         <span style="color: #dc3232;">✗ <?php _e('Your WordPress version is vulnerable and the virtual patch is disabled. Update WordPress now.', 'errorvault'); ?></span>
                                     <?php else: ?>
                                         <span style="color: #46b450;">✓ <?php _e('This WordPress version is not affected', 'errorvault'); ?></span>
@@ -605,12 +603,12 @@ class ErrorVault_Admin {
                                 <td style="font-weight: 600;"><?php _e('Remote Cleanup', 'errorvault'); ?></td>
                                 <td>
                                     <?php if (defined('ERRORVAULT_DISABLE_REMOTE_ACTIONS') && ERRORVAULT_DISABLE_REMOTE_ACTIONS): ?>
-                                        <input type="hidden" name="errorvault_settings[allow_remote_actions]" value="<?php echo empty($settings['disable_remote_actions']) ? '1' : ''; ?>">
+                                        <input type="hidden" name="errorvault_settings[allow_remote_actions]" value="<?php echo !empty($settings['allow_remote_actions']) ? '1' : ''; ?>">
                                         <span style="color: #666;"><?php _e('Disabled by ERRORVAULT_DISABLE_REMOTE_ACTIONS in wp-config.php', 'errorvault'); ?></span>
                                     <?php else: ?>
                                         <label>
                                             <input type="checkbox" name="errorvault_settings[allow_remote_actions]" value="1"
-                                                <?php checked(empty($settings['disable_remote_actions'])); ?>>
+                                                <?php checked(!empty($settings['allow_remote_actions']) && empty($settings['disable_remote_actions'])); ?>>
                                             <?php _e('Allow cleanup actions requested from the Error-Vault dashboard', 'errorvault'); ?>
                                         </label>
                                         <p class="description"><?php _e('Quarantine flagged files (restorable), remove malicious plugins, reinstall plugins/core from WordPress.org, delete rogue admins, rotate salts. Nothing sent by Error-Vault is ever run as code.', 'errorvault'); ?></p>
