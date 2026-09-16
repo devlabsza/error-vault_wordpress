@@ -2,6 +2,40 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.10.0] - 2026-09-16
+
+### Security
+- **Backup files could be downloaded by anyone.** Database dumps and archives were built in `wp-content/uploads/errorvault-backups/`, and full backups include `wp-config.php`. The public `backup.log` named each backup while it ran. Dumps, archives and the log are now kept in a private folder with a random name, outside the web root when possible (otherwise in `wp-content`). Anything left in the old folder is deleted on the next backup.
+- **Restoring a "Database + Uploads" backup could put a database dump back into public uploads.** Those archives contained the in-progress dump. They no longer do, and a restore never puts that folder back. With a symlinked uploads folder these archives also stored wrong file names, losing media; names now follow the uploads folder as it appears to WordPress.
+- **Error reports could include passwords.** Stack traces of uncaught exceptions included call arguments whenever `zend.exception_ignore_args` is off, which is PHP's default. They are now sent without arguments, like error traces.
+- **The security scan missed common webshells.** Code such as `echo shell_exec($_GET['cmd'])` wasn't detected, because a keyword was joined to the word after it before matching. Also detected now: short-tag code when the scanning process has `short_open_tag` off, and compressed PHAR files with a PHP name, which were treated as plain data.
+- **A backdoored `wp-includes/version.php` was reported as verified core.** Only plain `$variable = value;` statements are accepted now, and the core version is read so that a commented-out line can't change it. The wp2shell virtual patch also stays on while the code a request runs is still vulnerable, for example after an update from WP-CLI.
+- **Removing a plugin from the dashboard could delete a symlinked plugin's shared source** outside the WordPress install. Plugin removal now has the same safety checks as quarantine, and neither acts through symbolic links.
+
+### Fixed: restore and undo
+- **Undo could delete plugins, themes and uploads.** The undo copy was kept in `wp-content/upgrade`, which WordPress empties before any update. Undo then removed the live folders and had nothing to put back. The copy is now kept in a randomly named `wp-content/errorvault-restore-*` folder, and undo refuses to start if anything it needs is missing.
+- **A restore that failed part-way deleted the site's current plugins and themes**, for example when `uploads` is a separate mount. Every folder already swapped is now put back.
+- **A failed restore destroyed the undo point of the previous one.** The previous undo point is now only replaced once a new restore succeeds.
+- **Another WordPress install sharing the database could be overwritten.** Tables of an install whose prefix starts with this site's (such as `wp_shop_` next to `wp_`) are no longer exported, imported, swapped or dropped.
+- Symlinked plugins, `.git` and `node_modules` folders, which backups leave out, are no longer removed by a restore.
+- `wp-content/.htaccess` is no longer lost when undoing a restore that also replaced the root `.htaccess`.
+- Only this site's table data and session settings run while a dump is imported. GTID and binary-log settings and view statements are skipped instead of changing the live database or failing the restore.
+- A restore is refused while a backup or another restore is running. A restore refused for lack of disk space no longer blocks backups for 3 hours.
+- An unreadable folder in an expired undo point no longer stops the 5-minute check-in.
+
+### Fixed: scanning and error reporting
+- **Sites with Error-Vault enabled lost WordPress's fatal-error protection.** Uncaught exceptions were swallowed, so the "critical error" page, recovery mode and pausing of the broken plugin never happened. They are now reported and then passed back to PHP.
+- A dense PHP file, such as a large data table, could exhaust memory and stop every scan. Each file is now tokenized once, and files too dense for the memory limit are reported as a coverage gap.
+- One file that couldn't be read (deleted mid-scan, or in a folder that can be listed but not entered) no longer aborts the whole scan.
+- A fatal error while a report was being sent no longer prevents that fatal error from being reported.
+- Stack traces of errors no longer start with Error-Vault's own handler.
+
+### Changed
+- **Remote actions are now opt-in**, including backup restore and undo. Sites updating from earlier versions start with them off; turn them on in Settings > Error-Vault. When the dashboard asks for an action while they're off, wp-admin shows a notice.
+- The scan also reviews themes (inactive themes with PHP, unrecognised theme folders), WordPress drop-ins and PHP in mu-plugin subdirectories.
+- New signatures catch request input that is passed to a command, or called as a function, one assignment later. Method calls such as `$this->$action()` are not flagged.
+- Backups need a writable folder above WordPress or a writable `wp-content` (shown under Requirements on the settings page), instead of a writable uploads folder.
+
 ## [1.9.1] - 2026-09-11
 
 ### Fixed

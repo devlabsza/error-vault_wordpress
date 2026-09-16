@@ -8,4 +8,6 @@ The test PHAR is a mock byte string and its remote checksum is mocked. Separatel
 
 These regression tests establish behavior for the covered cases, not a detection-rate estimate or assurance that a production site is clean. The changes still require a plugin release, deployment and a fresh scan of the affected sites.
 
+1.10.0 adds cases for sinks after a keyword or comment (`echo shell_exec(...)`), method dispatch on request input, compressed PHAR data, files too dense to tokenize within the memory limit, `version.php` statements and commented-out version lines, and the theme file-count limit.
+
 1.9.1 adds Wordfence loader and tampering cases, dotted AIOS names, guarded WP Hide JSON data, plain-data PHP suffixes, cron counts and uploads indicator classification. WP Hide fixtures follow the official 1.4.9.1 package generator; Wordfence follows the current official package generator. Redux PHP contents from the affected production site have not been inspected.

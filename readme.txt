@@ -4,7 +4,7 @@ Tags: error logging, debugging, error monitoring, php errors, developer tools, s
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.9.1
+Stable tag: 1.10.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -74,6 +74,15 @@ Log in to your Error-Vault portal, add your site, and the API token will be disp
 
 == Changelog ==
 
+= 1.10.0 =
+* Security: database dumps, full-site backup archives (which include wp-config.php) and the backup log are now kept in a private folder, not the public uploads folder.
+* Security: the scan detects webshells it missed (such as `echo shell_exec(...)`, short-tag code and compressed PHAR files) and no longer accepts a backdoored wp-includes/version.php as verified core.
+* Security: error reports no longer include call arguments, such as passwords, from exception stack traces.
+* Restore and undo: undo no longer deletes plugins, themes and uploads after a WordPress update; a restore that fails part-way puts everything back; the previous undo point is kept until a new restore succeeds; another install's tables in a shared database are never touched; symlinked plugins, .git and node_modules folders are kept.
+* WordPress's fatal-error protection (the critical error page and recovery mode) works again on sites with Error-Vault enabled.
+* Remote actions from the Error-Vault dashboard, including restore and undo, are now opt-in. wp-admin shows a notice when a request was refused.
+* The scan now also reviews themes, WordPress drop-ins and PHP in mu-plugin subdirectories.
+
 = 1.9.1 =
 * Fix Wordfence and AIOS loader recognition and expand official WP-CLI checksums.
 * Recognize WP Hide environment data and avoid treating uploads location alone as an infection indicator.
@@ -137,6 +146,9 @@ Log in to your Error-Vault portal, add your site, and the API token will be disp
 * Dashboard widget
 
 == Upgrade Notice ==
+
+= 1.10.0 =
+Important security and restore fixes. Remote actions from the dashboard, including backup restore and undo, stay off until you turn them on in Settings > Error-Vault. Run a fresh security scan after updating.
 
 = 1.9.1 =
 Fixes known-tool recognition gaps in 1.9.0. Run a fresh scan after updating. Unverified executable uploads still require review.
