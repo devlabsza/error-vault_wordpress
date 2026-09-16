@@ -512,8 +512,8 @@ class ErrorVault_Admin {
                                         <?php if (!$requirements['zip_available']): ?>
                                             <br><span style="color: #dc3232; font-size: 12px;">• ZipArchive extension not available</span>
                                         <?php endif; ?>
-                                        <?php if (!$requirements['uploads_writable']): ?>
-                                            <br><span style="color: #dc3232; font-size: 12px;">• Uploads directory not writable</span>
+                                        <?php if (!$requirements['storage_writable']): ?>
+                                            <br><span style="color: #dc3232; font-size: 12px;">• No writable private folder for backup files (the folder above WordPress or wp-content)</span>
                                         <?php endif; ?>
                                         <?php if (!$requirements['api_configured']): ?>
                                             <br><span style="color: #dc3232; font-size: 12px;">• API not configured</span>
@@ -609,9 +609,9 @@ class ErrorVault_Admin {
                                         <label>
                                             <input type="checkbox" name="errorvault_settings[allow_remote_actions]" value="1"
                                                 <?php checked(!empty($settings['allow_remote_actions']) && empty($settings['disable_remote_actions'])); ?>>
-                                            <?php _e('Allow cleanup actions requested from the Error-Vault dashboard', 'errorvault'); ?>
+                                            <?php _e('Allow actions requested from the Error-Vault dashboard', 'errorvault'); ?>
                                         </label>
-                                        <p class="description"><?php _e('Quarantine flagged files (restorable), remove malicious plugins, reinstall plugins/core from WordPress.org, delete rogue admins, rotate salts. Nothing sent by Error-Vault is ever run as code.', 'errorvault'); ?></p>
+                                        <p class="description"><?php _e('Off by default. Covers restoring backups and undoing a restore, quarantining flagged files (restorable), removing malicious plugins, reinstalling plugins/core from WordPress.org, deleting rogue admins and rotating salts. While it is off, these requests are refused and a notice appears here in wp-admin. Nothing sent by Error-Vault is ever run as code.', 'errorvault'); ?></p>
                                     <?php endif; ?>
                                 </td>
                             </tr>

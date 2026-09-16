@@ -4,13 +4,21 @@
  *
  * Designed so a failure part-way can't leave a half-restored site:
  *  1. Download the archive and verify its SHA-256, unzip it (unsafe paths refused).
- *  2. Import the database into temporary "evr_" tables. The live site is untouched.
+ *  2. Import the database into temporary "evr_" tables. The live site is untouched:
+ *     only this site's table data and session settings from the dump are run.
  *  3. Maintenance mode on; swap wp-content folders (renames) and swap all tables
- *     in one atomic RENAME TABLE; the previous tables become "evo_" tables.
+ *     in one atomic RENAME TABLE; the previous tables become "evo_" tables. If
+ *     anything fails, every folder already swapped is put back.
  *  4. The previous files/tables are kept for 7 days, so the restore can be undone.
+ *     They are kept in wp-content under a random name, not in wp-content/upgrade
+ *     (WordPress empties that before every update). An earlier undo point is only
+ *     dropped once the new restore has succeeded.
  *
  * Always kept from the live site: Error-Vault itself and its settings, the site
- * URL, wp-config.php and WordPress core (update core afterwards if needed).
+ * URL, wp-config.php and WordPress core (update core afterwards if needed), and
+ * what backups leave out (symlinks, .git / node_modules folders, unreadable files).
+ * Tables of another install sharing the database (e.g. "wp_shop_" next to "wp_")
+ * are never imported, swapped or dropped.
  *
  * Only archives this site recorded (backup id + SHA-256) when it made them are
  * restored remotely. Anything else needs an administrator's approval in wp-admin,
@@ -30,16 +38,27 @@ class EV_Backup_Restorer {
     const APPROVAL_OPTION = 'errorvault_pending_restore';
     const TMP_PREFIX = 'evr_';
     const OLD_PREFIX = 'evo_';
+    const PARK_PREFIX = 'evp_';
     const KEEP_DAYS = 7;
 
     /** wp-content entries a restore never replaces. */
     const PROTECTED_CONTENT = array('upgrade', 'upgrade-temp-backup', 'cache', 'wflogs', 'ai1wm-backups', 'updraft', 'backups-dup-lite');
 
+    /** Folders backups leave out wherever they are, so a restore keeps the live ones. */
+    const CARRIED_NAMES = array('.git', 'node_modules');
+
     /** Options carried over from the live site into the restored database. */
     const PRESERVED_OPTIONS = array(
         'siteurl', 'home', 'errorvault_settings', 'errorvault_backup_history', 'errorvault_executed_actions',
         'errorvault_quarantine', 'errorvault_quarantine_dir', 'errorvault_security_last_scan', 'errorvault_last_restore',
+        'errorvault_private_dir',
     );
+
+    /** Live table names whose evr_ copy this run created. */
+    private $imported = array();
+
+    /** Prefixes of other installs sharing the database (EV_Backup_Helpers::foreign_prefixes()). */
+    private $foreign = null;
 
     /* ------------------------------------------------------------------
      * Backup history (what this site itself produced)
@@ -92,26 +111,31 @@ class EV_Backup_Restorer {
             throw new EV_Restore_Needs_Approval('This backup was not made by this installation of Error-Vault 1.8+, so an administrator must approve the restore in WordPress (a notice is shown in wp-admin).');
         }
 
+        if (get_transient('ev_backup_lock')) {
+            throw new Exception('A backup or restore is already running on this site. Try again once it has finished.');
+        }
+
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
         @ignore_user_abort(true);
-        set_transient('ev_backup_lock', 1, 3 * HOUR_IN_SECONDS);
-
-        $restore_id = gmdate('YmdHis');
-        $work = wp_normalize_path(WP_CONTENT_DIR . '/upgrade/errorvault-restore-' . $restore_id);
-        if (!wp_mkdir_p($work)) {
-            throw new Exception('Could not create a working folder in wp-content/upgrade.');
-        }
-        @file_put_contents($work . '/index.php', "<?php\n// Silence is golden.\n");
-        @file_put_contents($work . '/.htaccess', "Require all denied\nDeny from all\n");
 
         $size = isset($source['size']) ? (int) $source['size'] : 0;
         $free = @disk_free_space(WP_CONTENT_DIR);
         if ($size && false !== $free && $free < $size * 4 + 100 * MB_IN_BYTES) {
-            $this->rrmdir($work);
             throw new Exception(sprintf('Not enough disk space to restore safely (need about %s free, have %s).', size_format($size * 4 + 100 * MB_IN_BYTES), size_format($free)));
         }
+
+        // Not under wp-content/upgrade: WordPress empties that folder before every
+        // update, which would wipe the undo point. The random part keeps the saved
+        // (possibly infected) files unreachable on servers that ignore .htaccess.
+        $restore_id = gmdate('YmdHis');
+        $work = wp_normalize_path(WP_CONTENT_DIR . '/errorvault-restore-' . $restore_id . '-' . strtolower(wp_generate_password(16, false)));
+        if (!wp_mkdir_p($work)) {
+            throw new Exception('Could not create a working folder in wp-content.');
+        }
+        EV_Backup_Helpers::write_deny_files($work);
+        set_transient('ev_backup_lock', 1, 3 * HOUR_IN_SECONDS);
 
         try {
             // 1. Download + verify.
@@ -125,9 +149,9 @@ class EV_Backup_Restorer {
                 @copy($tmp, $zip_path);
                 @unlink($tmp);
             }
-            $sha = hash_file('sha256', $zip_path);
+            $sha = is_file($zip_path) ? hash_file('sha256', $zip_path) : false;
             $expected = $recorded ? $recorded : (isset($source['checksum']) ? strtolower((string) $source['checksum']) : '');
-            if (!$expected || !hash_equals($expected, $sha)) {
+            if (!$expected || !is_string($sha) || !hash_equals($expected, $sha)) {
                 throw new Exception('The downloaded archive does not match the checksum recorded when the backup was made, so it was not restored.');
             }
 
@@ -140,54 +164,97 @@ class EV_Backup_Restorer {
             if (!is_file($sql)) {
                 throw new Exception('The backup does not contain database.sql.');
             }
+            // Older archives can contain the old public backup folder, including a copy
+            // of the database dump. Never put that back on the site.
+            $this->rrmdir($extract . '/uploads/errorvault-backups');
+            $this->rrmdir($extract . '/wp-content/uploads/errorvault-backups');
+
             $has_content = is_dir($extract . '/wp-content');
             $legacy_uploads = !$has_content && is_dir($extract . '/uploads');
+            $restores_uploads = $has_content ? is_dir($extract . '/wp-content/uploads') : $legacy_uploads;
 
             // 3. Database into temporary tables (live site untouched).
             $tables = $this->import_to_temp_tables($sql);
             if (!in_array($wpdb->prefix . 'options', $tables, true) || !in_array($wpdb->prefix . 'users', $tables, true)) {
                 throw new Exception(sprintf('The backup has no WordPress tables with this site\'s prefix (%s), so nothing was restored.', $wpdb->prefix));
             }
-        } catch (Exception $e) {
-            $this->drop_tables_like(self::TMP_PREFIX . $wpdb->prefix);
+        } catch (Throwable $e) {
+            $this->drop_tables($this->prefixed(self::TMP_PREFIX, array_keys($this->imported)));
             $this->rrmdir($work);
             delete_transient('ev_backup_lock');
             throw $e;
         }
 
-        // 4. Switch over.
+        // 4. Switch over. The previous undo point is set aside rather than dropped,
+        // so a restore that fails from here on leaves it usable.
+        $previous = get_option(self::RESTORE_OPTION);
         $preserved = $this->read_preserved_options();
-        $this->discard_undo_point();
         $this->maintenance(true);
 
+        $parked = array();
         $moved = array();
-        $swap = null;
         try {
+            $parked = $this->park_undo_tables();
+
             $rollback = $work . '/rollback';
             wp_mkdir_p($rollback);
 
             if ($has_content) {
-                $moved = $this->swap_content($extract . '/wp-content', $rollback);
+                $this->swap_content($extract . '/wp-content', $rollback, $moved);
             } elseif ($legacy_uploads) {
                 $moved[] = $this->swap_one($extract . '/uploads', WP_CONTENT_DIR . '/uploads', $rollback . '/uploads');
+                $this->carry_over_excluded($rollback . '/uploads', WP_CONTENT_DIR . '/uploads', $moved);
             }
             if (is_file($extract . '/root/.htaccess')) {
-                $moved[] = $this->swap_one($extract . '/root/.htaccess', ABSPATH . '.htaccess', $rollback . '/.htaccess');
+                // Kept under rollback/root: rollback/.htaccess is wp-content's own .htaccess.
+                wp_mkdir_p($rollback . '/root');
+                $moved[] = $this->swap_one($extract . '/root/.htaccess', ABSPATH . '.htaccess', $rollback . '/root/.htaccess');
             }
 
             $swap = $this->swap_tables($tables);
-            $this->write_preserved_options($preserved);
-        } catch (Exception $e) {
-            $this->revert_files($moved, $work);
-            $this->drop_tables_like(self::TMP_PREFIX . $wpdb->prefix);
+        } catch (Throwable $e) {
+            $problems = array();
+            $kept = array();
+            try {
+                $kept = $this->revert_files($moved, $work);
+            } catch (Throwable $cleanup) {
+                $problems[] = $cleanup->getMessage();
+                $kept[] = 'wp-content';
+            }
+            try {
+                $this->drop_tables($this->prefixed(self::TMP_PREFIX, $tables));
+            } catch (Throwable $cleanup) {
+                $problems[] = $cleanup->getMessage();
+            }
+            try {
+                $this->unpark_undo_tables($parked);
+            } catch (Throwable $cleanup) {
+                $problems[] = $cleanup->getMessage();
+            }
             $this->maintenance(false);
-            $this->rrmdir($work);
+            if ($kept) {
+                // Never delete the saved copy of anything that couldn't be put back.
+                $problems[] = 'could not put back ' . implode(', ', array_map('basename', $kept)) . '; the saved copy was kept in a wp-content/errorvault-restore-* folder';
+            } else {
+                $this->rrmdir($work);
+            }
             delete_transient('ev_backup_lock');
-            throw new Exception('Restore failed and was rolled back: ' . $e->getMessage());
+            throw new Exception(($kept ? 'Restore failed and could not be fully rolled back: ' : 'Restore failed and was rolled back: ') . $e->getMessage() . ($problems ? ' (' . implode('; ', $problems) . ')' : ''));
         }
 
+        try {
+            $this->write_preserved_options($preserved);
+        } catch (Throwable $e) {
+            error_log('[ErrorVault Restore] Could not carry settings over into the restored database: ' . $e->getMessage());
+        }
         $this->maintenance(false);
         wp_cache_flush();
+
+        // Only now replace the previous undo point with this one.
+        $this->drop_tables($this->prefixed(self::PARK_PREFIX, $parked));
+        if (is_array($previous) && !empty($previous['work']) && $previous['work'] !== $work) {
+            $this->rrmdir($previous['work']);
+        }
 
         $record = array(
             'restore_id' => $restore_id,
@@ -210,12 +277,14 @@ class EV_Backup_Restorer {
                 'Restored backup #%d: %d database tables%s. The previous state is kept for %d days and can be undone. Anyone logged in may need to log in again.',
                 $backup_id,
                 count($swap['tables']),
-                $has_content ? ' and wp-content (themes, plugins' . (is_dir(WP_CONTENT_DIR . '/uploads') ? ', uploads' : '') . ')' : ($legacy_uploads ? ' and uploads' : ''),
+                $has_content ? ' and wp-content (themes, plugins' . ($restores_uploads ? ', uploads' : '') . ')' : ($legacy_uploads ? ' and uploads' : ''),
                 self::KEEP_DAYS
             ),
             'restore_id' => $restore_id,
             'tables' => count($swap['tables']),
-            'files_restored' => count($moved),
+            'files_restored' => count(array_filter($moved, function ($item) {
+                return empty($item['carried']);
+            })),
         );
     }
 
@@ -233,46 +302,71 @@ class EV_Backup_Restorer {
         if (time() - (int) $record['time'] > self::KEEP_DAYS * DAY_IN_SECONDS) {
             throw new Exception('The undo point for that restore has expired.');
         }
+        if (get_transient('ev_backup_lock')) {
+            throw new Exception('A backup or restore is running on this site. Try again once it has finished.');
+        }
 
+        // Check everything is still there before changing anything: undoing the
+        // database without the files (or the other way round) would mix two states.
+        foreach ((array) $record['moved'] as $item) {
+            if (empty($item['carried']) && !empty($item['rollback']) && !$this->path_exists($item['rollback'])) {
+                throw new Exception(sprintf('The files saved before that restore (%s) are missing, so it can\'t be undone safely. Nothing was changed.', basename($item['live'])));
+            }
+        }
+        foreach ((array) $record['had_old'] as $table) {
+            if (!$this->table_exists(self::OLD_PREFIX . $table)) {
+                throw new Exception('The database tables saved before that restore are missing, so it can\'t be undone safely. Nothing was changed.');
+            }
+        }
+
+        set_transient('ev_backup_lock', 1, 3 * HOUR_IN_SECONDS);
         $preserved = $this->read_preserved_options();
         $this->maintenance(true);
 
         try {
-            $pairs = array();
-            foreach ($record['tables'] as $table) {
-                $pairs[] = '`' . $table . '` TO `' . self::TMP_PREFIX . $table . '`';
-                if (in_array($table, $record['had_old'], true)) {
-                    $pairs[] = '`' . self::OLD_PREFIX . $table . '` TO `' . $table . '`';
-                }
-            }
-            if (false === $wpdb->query('RENAME TABLE ' . implode(', ', $pairs))) {
-                throw new Exception('Could not switch the database back: ' . $wpdb->last_error);
-            }
-            $this->drop_tables_like(self::TMP_PREFIX . $record['prefix']);
-            $this->revert_files($record['moved'], $record['work']);
-
-            unset($preserved['errorvault_last_restore']);
-            $this->write_preserved_options($preserved);
-            $wpdb->delete($wpdb->options, array('option_name' => self::RESTORE_OPTION));
-        } catch (Exception $e) {
+            $this->drop_tables($this->prefixed(self::TMP_PREFIX, $this->tables_with_prefix(self::TMP_PREFIX)));
+            $this->unswap_tables((array) $record['tables'], (array) $record['had_old']);
+        } catch (Throwable $e) {
             $this->maintenance(false);
+            delete_transient('ev_backup_lock');
             throw $e;
         }
 
+        $this->drop_tables($this->prefixed(self::TMP_PREFIX, (array) $record['tables']));
+        $kept = $this->revert_files((array) $record['moved'], $record['work']);
+
+        unset($preserved['errorvault_last_restore']);
+        $this->write_preserved_options($preserved);
+        $wpdb->delete($wpdb->options, array('option_name' => self::RESTORE_OPTION));
+
         $this->maintenance(false);
         wp_cache_flush();
-        $this->rrmdir($record['work']);
+        if (!$kept) {
+            $this->rrmdir($record['work']);
+        }
+        delete_transient('ev_backup_lock');
 
+        if ($kept) {
+            return array(
+                'message' => sprintf('Undid the restore of the database, but could not put back %s; the saved copy was kept in a wp-content/errorvault-restore-* folder.', implode(', ', array_map('basename', $kept))),
+                'restore_id' => $restore_id,
+            );
+        }
         return array('message' => 'Undid the restore: the database and files are back to how they were before it.', 'restore_id' => $restore_id);
     }
 
     /**
      * Drop the undo point once it's older than KEEP_DAYS (called on each poll).
+     * Never throws: a problem here must not stop the check-in.
      */
     public static function cleanup_expired() {
-        $record = get_option(self::RESTORE_OPTION);
-        if (is_array($record) && time() - (int) $record['time'] > self::KEEP_DAYS * DAY_IN_SECONDS) {
-            (new self())->discard_undo_point();
+        try {
+            $record = get_option(self::RESTORE_OPTION);
+            if (is_array($record) && time() - (int) $record['time'] > self::KEEP_DAYS * DAY_IN_SECONDS && !get_transient('ev_backup_lock')) {
+                (new self())->discard_undo_point($record);
+            }
+        } catch (Throwable $e) {
+            error_log('[ErrorVault Restore] Could not remove the expired undo point: ' . $e->getMessage());
         }
     }
 
@@ -387,20 +481,38 @@ class EV_Backup_Restorer {
         global $wpdb;
         $prefix = $wpdb->prefix;
         $dbh = $wpdb->dbh;
+        $foreign = $this->foreign_prefixes();
 
-        $this->drop_tables_like(self::TMP_PREFIX . $prefix);
+        $this->drop_tables($this->prefixed(self::TMP_PREFIX, $this->tables_with_prefix(self::TMP_PREFIX)));
         $placeholder = $this->legacy_percent_placeholder($sql_path);
-
-        mysqli_query($dbh, 'SET FOREIGN_KEY_CHECKS = 0');
 
         $handle = fopen($sql_path, 'r');
         if (!$handle) {
             throw new Exception('Could not read database.sql.');
         }
 
+        // The dump's SET statements run on WordPress's own connection; put its
+        // session settings back afterwards.
+        $session = array();
+        $result = mysqli_query($dbh, 'SELECT @@SESSION.sql_mode, @@SESSION.time_zone, @@SESSION.character_set_client, @@SESSION.character_set_results, @@SESSION.collation_connection');
+        if ($result instanceof mysqli_result) {
+            $row = mysqli_fetch_row($result);
+            mysqli_free_result($result);
+            foreach (array('sql_mode', 'time_zone', 'character_set_client', 'character_set_results', 'collation_connection') as $i => $name) {
+                if (isset($row[$i])) {
+                    $session[] = $name . " = '" . mysqli_real_escape_string($dbh, $row[$i]) . "'";
+                }
+            }
+        }
+        mysqli_query($dbh, 'SET FOREIGN_KEY_CHECKS = 0');
+
         $tables = array();
         $statement = '';
         $head = '/^(\s*(?:DROP TABLE IF EXISTS|DROP TABLE|CREATE TABLE(?: IF NOT EXISTS)?|INSERT(?: IGNORE)? INTO|REPLACE INTO|\/\*!\d+\s+ALTER TABLE|ALTER TABLE)\s+)`([^`]+)`/i';
+        // Apart from this site's table data, only session settings are run. Anything
+        // else in a dump (GTID and binary-log settings, views, routines, locks) could
+        // change the live database or server, so it is skipped.
+        $session_setting = '/^\s*(?:\/\*!\d+\s+)?SET\s+(?:NAMES\b|CHARACTER\s+SET\b|@[A-Za-z_]\w*\s*=|(?:SESSION\s+)?(?:FOREIGN_KEY_CHECKS|UNIQUE_CHECKS|SQL_MODE|SQL_NOTES|TIME_ZONE|CHARACTER_SET_CLIENT|CHARACTER_SET_RESULTS|COLLATION_CONNECTION)\s*=)/i';
 
         try {
             while (false !== ($line = fgets($handle))) {
@@ -422,13 +534,9 @@ class EV_Backup_Restorer {
                 $query = $statement;
                 $statement = '';
 
-                if (preg_match('/^\s*(?:LOCK TABLES|UNLOCK TABLES)\b/i', $query) || preg_match('/^\s*(?:\/\*!\d+\s+)?CREATE\s+(?:ALGORITHM|DEFINER|VIEW|TRIGGER|FUNCTION|PROCEDURE)/i', $query)) {
-                    continue;
-                }
-
                 if (preg_match($head, $query, $m)) {
                     $table = $m[2];
-                    if (0 !== strpos($table, $prefix)) {
+                    if (!EV_Backup_Helpers::is_site_table($table, $prefix, $foreign)) {
                         continue; // another install's table in a shared database
                     }
                     if (strlen(self::OLD_PREFIX . $table) > 64) {
@@ -438,7 +546,10 @@ class EV_Backup_Restorer {
                     if (false !== stripos($m[1], 'CREATE TABLE')) {
                         $query = $this->strip_foreign_keys($query);
                         $tables[$table] = true;
+                        $this->imported[$table] = true;
                     }
+                } elseif (!preg_match($session_setting, $query)) {
+                    continue;
                 }
 
                 if ($placeholder) {
@@ -452,6 +563,9 @@ class EV_Backup_Restorer {
         } finally {
             fclose($handle);
             mysqli_query($dbh, 'SET FOREIGN_KEY_CHECKS = 1');
+            if ($session) {
+                mysqli_query($dbh, 'SET SESSION ' . implode(', ', $session));
+            }
         }
 
         return array_keys($tables);
@@ -496,7 +610,7 @@ class EV_Backup_Restorer {
         $pairs = array();
         $had_old = array();
         foreach ($tables as $table) {
-            if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table))) === $table) {
+            if ($this->table_exists($table)) {
                 $pairs[] = '`' . $table . '` TO `' . self::OLD_PREFIX . $table . '`';
                 $had_old[] = $table;
             }
@@ -507,6 +621,67 @@ class EV_Backup_Restorer {
             throw new Exception('Could not switch to the restored database: ' . $wpdb->last_error);
         }
         return array('tables' => array_values($tables), 'had_old' => $had_old);
+    }
+
+    /**
+     * Reverse swap_tables(): restored tables back to evr_, evo_ tables back live.
+     */
+    private function unswap_tables(array $tables, array $had_old) {
+        global $wpdb;
+        $pairs = array();
+        foreach ($tables as $table) {
+            $pairs[] = '`' . $table . '` TO `' . self::TMP_PREFIX . $table . '`';
+            if (in_array($table, $had_old, true)) {
+                $pairs[] = '`' . self::OLD_PREFIX . $table . '` TO `' . $table . '`';
+            }
+        }
+        if ($pairs && false === $wpdb->query('RENAME TABLE ' . implode(', ', $pairs))) {
+            throw new Exception('Could not switch the database back: ' . $wpdb->last_error);
+        }
+    }
+
+    /**
+     * Rename the previous undo point's evo_ tables to evp_, so this restore can use
+     * the evo_ names while the old ones stay recoverable. Returns the live table
+     * names that were set aside.
+     */
+    private function park_undo_tables() {
+        global $wpdb;
+
+        // Tables set aside by a restore that was killed part-way: back to evo_,
+        // unless evo_ has been taken since.
+        $pairs = array();
+        foreach ($this->tables_with_prefix(self::PARK_PREFIX) as $table) {
+            if ($this->table_exists(self::OLD_PREFIX . $table)) {
+                $this->drop_tables(array(self::PARK_PREFIX . $table));
+            } else {
+                $pairs[] = '`' . self::PARK_PREFIX . $table . '` TO `' . self::OLD_PREFIX . $table . '`';
+            }
+        }
+        if ($pairs && false === $wpdb->query('RENAME TABLE ' . implode(', ', $pairs))) {
+            throw new Exception('Could not recover the previous undo point: ' . $wpdb->last_error);
+        }
+
+        $parked = $this->tables_with_prefix(self::OLD_PREFIX);
+        $pairs = array();
+        foreach ($parked as $table) {
+            $pairs[] = '`' . self::OLD_PREFIX . $table . '` TO `' . self::PARK_PREFIX . $table . '`';
+        }
+        if ($pairs && false === $wpdb->query('RENAME TABLE ' . implode(', ', $pairs))) {
+            throw new Exception('Could not set the previous undo point aside: ' . $wpdb->last_error);
+        }
+        return $parked;
+    }
+
+    private function unpark_undo_tables(array $parked) {
+        global $wpdb;
+        $pairs = array();
+        foreach ($parked as $table) {
+            $pairs[] = '`' . self::PARK_PREFIX . $table . '` TO `' . self::OLD_PREFIX . $table . '`';
+        }
+        if ($pairs && false === $wpdb->query('RENAME TABLE ' . implode(', ', $pairs))) {
+            throw new Exception('Could not bring back the previous undo point: ' . $wpdb->last_error);
+        }
     }
 
     private function read_preserved_options() {
@@ -542,10 +717,17 @@ class EV_Backup_Restorer {
         wp_cache_flush();
     }
 
-    private function swap_content($backup_content, $rollback) {
-        $moved = array();
-        foreach ((array) scandir($backup_content) as $name) {
-            if ('.' === $name || '..' === $name || in_array($name, self::PROTECTED_CONTENT, true) || 0 === strpos($name, 'errorvault-quarantine')) {
+    /**
+     * Swap each top-level entry of the restored wp-content into place. $moved is
+     * filled as it goes, so if a later entry fails the earlier ones can be put back.
+     */
+    private function swap_content($backup_content, $rollback, array &$moved) {
+        $entries = @scandir($backup_content);
+        if (false === $entries) {
+            throw new Exception('Could not read the restored wp-content folder.');
+        }
+        foreach ($entries as $name) {
+            if ('.' === $name || '..' === $name || in_array($name, self::PROTECTED_CONTENT, true) || EV_Backup_Helpers::is_own_folder($name)) {
                 continue;
             }
             $moved[] = $this->swap_one($backup_content . '/' . $name, WP_CONTENT_DIR . '/' . $name, $rollback . '/' . $name);
@@ -559,12 +741,13 @@ class EV_Backup_Restorer {
                 }
                 $this->copy_dir($rollback . '/plugins/' . $self_dir, $restored_copy);
             }
+
+            $this->carry_over_excluded($rollback . '/' . $name, WP_CONTENT_DIR . '/' . $name, $moved);
         }
-        return $moved;
     }
 
     private function swap_one($source, $live, $rollback_path) {
-        $had_live = file_exists($live);
+        $had_live = $this->path_exists($live);
         if ($had_live && !@rename($live, $rollback_path)) {
             throw new Exception('Could not move ' . basename($live) . ' aside (permissions?).');
         }
@@ -577,37 +760,147 @@ class EV_Backup_Restorer {
         return array('live' => wp_normalize_path($live), 'rollback' => $had_live ? wp_normalize_path($rollback_path) : null);
     }
 
-    private function revert_files(array $moved, $work) {
-        foreach (array_reverse($moved) as $i => $item) {
-            if (file_exists($item['live'])) {
-                $trash = $work . '/trash-' . $i;
-                if (@rename($item['live'], $trash)) {
-                    $this->rrmdir($trash);
-                } else {
-                    $this->rrmdir($item['live']);
-                }
+    /**
+     * Backups leave out symlinks, .git / node_modules folders and unreadable files,
+     * so the restored folder doesn't have them. Move the live ones (now in the saved
+     * copy) into the restored folder wherever that path is free, recorded as
+     * "carried" so an undo or rollback moves them back first.
+     */
+    private function carry_over_excluded($saved_root, $live_root, array &$moved) {
+        if (!is_dir($saved_root) || is_link($saved_root) || !is_dir($live_root) || is_link($live_root)) {
+            return;
+        }
+        $pending = array('');
+        $visited = 0;
+        while ($pending) {
+            $relative = array_pop($pending);
+            $entries = @scandir('' === $relative ? $saved_root : $saved_root . '/' . $relative);
+            if (false === $entries) {
+                continue;
             }
-            if ($item['rollback'] && file_exists($item['rollback'])) {
-                @rename($item['rollback'], $item['live']);
+            foreach ($entries as $name) {
+                if ('.' === $name || '..' === $name) {
+                    continue;
+                }
+                if (++$visited > 250000) {
+                    error_log('[ErrorVault Restore] Stopped looking for symlinks, .git and node_modules after 250,000 entries in ' . basename($live_root) . '.');
+                    return;
+                }
+                $child = '' === $relative ? $name : $relative . '/' . $name;
+                $from = $saved_root . '/' . $child;
+                $to = $live_root . '/' . $child;
+                $is_link = is_link($from);
+                $is_dir = !$is_link && is_dir($from);
+
+                if (!$is_link && !($is_dir && in_array($name, self::CARRIED_NAMES, true)) && ($is_dir || is_readable($from))) {
+                    // An ordinary entry: look inside folders the restored copy also has.
+                    if ($is_dir && is_dir($to) && !is_link($to)) {
+                        $pending[] = $child;
+                    }
+                    continue;
+                }
+                if ($this->path_exists($to) || !is_dir(dirname($to))) {
+                    continue;
+                }
+                if (@rename($from, $to)) {
+                    $moved[] = array('live' => wp_normalize_path($to), 'rollback' => wp_normalize_path($from), 'carried' => true);
+                }
             }
         }
     }
 
-    private function discard_undo_point() {
-        global $wpdb;
-        $record = get_option(self::RESTORE_OPTION);
-        $this->drop_tables_like(self::OLD_PREFIX . $wpdb->prefix);
+    /**
+     * Put swapped files back. Returns the live paths that could not be put back;
+     * their saved copies are left where they are.
+     */
+    private function revert_files(array $moved, $work) {
+        $failed = array();
+        foreach (array_reverse($moved, true) as $i => $item) {
+            $live = $item['live'];
+            $rollback = $item['rollback'];
+
+            if (!empty($item['carried'])) {
+                // Return it to the saved copy of the folder it came from.
+                if ($this->path_exists($live) && !$this->path_exists($rollback) && !@rename($live, $rollback)) {
+                    $failed[] = $live;
+                }
+                continue;
+            }
+            if ($rollback && !$this->path_exists($rollback)) {
+                // The saved copy is gone: keep what's live rather than delete it.
+                $failed[] = $live;
+                continue;
+            }
+            if ($this->path_exists($live)) {
+                $trash = $work . '/trash-' . $i;
+                if (@rename($live, $trash)) {
+                    $this->rrmdir($trash);
+                } else {
+                    $this->rrmdir($live);
+                }
+            }
+            if ($rollback && !@rename($rollback, $live)) {
+                $failed[] = $live;
+            }
+        }
+        return $failed;
+    }
+
+    private function discard_undo_point($record) {
+        $this->drop_tables($this->prefixed(self::OLD_PREFIX, $this->tables_with_prefix(self::OLD_PREFIX)));
         if (is_array($record) && !empty($record['work'])) {
             $this->rrmdir($record['work']);
         }
         delete_option(self::RESTORE_OPTION);
     }
 
-    private function drop_tables_like($prefix) {
+    /**
+     * Live table names X for which a "{$p}X" table exists, leaving out tables of
+     * other installs that share the database.
+     */
+    private function tables_with_prefix($p) {
         global $wpdb;
-        foreach ((array) $wpdb->get_col($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($prefix) . '%')) as $table) {
+        $prefix = $wpdb->prefix;
+        $foreign = $this->foreign_prefixes();
+        $names = array();
+        foreach ((array) $wpdb->get_col($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($p . $prefix) . '%')) as $table) {
+            $name = substr((string) $table, strlen($p));
+            if (EV_Backup_Helpers::is_site_table($name, $prefix, $foreign)) {
+                $names[] = $name;
+            }
+        }
+        return $names;
+    }
+
+    private function foreign_prefixes() {
+        global $wpdb;
+        if (null === $this->foreign) {
+            $live = (array) $wpdb->get_col($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($wpdb->prefix) . '%'));
+            $this->foreign = EV_Backup_Helpers::foreign_prefixes($live, $wpdb->prefix);
+        }
+        return $this->foreign;
+    }
+
+    private function table_exists($table) {
+        global $wpdb;
+        return $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table))) === $table;
+    }
+
+    private function prefixed($p, array $tables) {
+        return array_map(function ($table) use ($p) {
+            return $p . $table;
+        }, $tables);
+    }
+
+    private function drop_tables(array $tables) {
+        global $wpdb;
+        foreach ($tables as $table) {
             $wpdb->query('DROP TABLE IF EXISTS `' . str_replace('`', '', $table) . '`');
         }
+    }
+
+    private function path_exists($path) {
+        return file_exists($path) || is_link($path);
     }
 
     private function maintenance($on) {
@@ -639,9 +932,15 @@ class EV_Backup_Restorer {
             @unlink($path);
             return;
         }
-        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
-        foreach ($it as $file) {
-            ($file->isDir() && !$file->isLink()) ? @rmdir($file->getPathname()) : @unlink($file->getPathname());
+        try {
+            // CATCH_GET_CHILD: a subfolder that can't be opened is skipped instead of
+            // throwing (an exception here used to stop every later check-in).
+            $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST, RecursiveIteratorIterator::CATCH_GET_CHILD);
+            foreach ($it as $file) {
+                ($file->isDir() && !$file->isLink()) ? @rmdir($file->getPathname()) : @unlink($file->getPathname());
+            }
+        } catch (Exception $e) {
+            // The folder itself can't be opened; leave it.
         }
         @rmdir($path);
     }

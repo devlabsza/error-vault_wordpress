@@ -99,11 +99,8 @@ class ErrorVault_Security_Scanner {
      * code loaded into this request, which is stale right after a core update.
      */
     public static function installed_wp_version() {
-        $contents = @file_get_contents(ABSPATH . WPINC . '/version.php');
-        if ($contents && preg_match('/\$wp_version\s*=\s*[\'"]([^\'"]+)[\'"]/', $contents, $m)) {
-            return $m[1];
-        }
-        return get_bloginfo('version');
+        $values = self::version_php_values();
+        return isset($values['wp_version']) ? $values['wp_version'] : get_bloginfo('version');
     }
 
     /**
@@ -112,17 +109,58 @@ class ErrorVault_Security_Scanner {
      * decides which files are on disk, and it's what core uses for checksums.
      */
     public static function installed_wp_package_locale() {
-        $contents = @file_get_contents(ABSPATH . WPINC . '/version.php');
-        if ($contents && preg_match('/\$wp_local_package\s*=\s*[\'"]([A-Za-z_]+)[\'"]/', $contents, $m)) {
-            return $m[1];
+        $values = self::version_php_values();
+        return isset($values['wp_local_package']) && preg_match('/^[A-Za-z_]+$/', $values['wp_local_package']) ? $values['wp_local_package'] : 'en_US';
+    }
+
+    private static $version_php = array('key' => null, 'values' => array());
+
+    /**
+     * "$name = 'value';" statements in wp-includes/version.php. Read with the
+     * tokenizer, so a commented-out assignment can't change the version the
+     * scanner verifies against; the last assignment wins, as it does in PHP.
+     */
+    private static function version_php_values() {
+        // Keyed by content: the file is tiny, and a core update in this request can
+        // change it without changing its size or modification second.
+        $code = @file_get_contents(ABSPATH . WPINC . '/version.php');
+        $key = false === $code ? '' : md5($code);
+        if ($key === self::$version_php['key']) {
+            return self::$version_php['values'];
         }
-        return 'en_US';
+
+        $values = array();
+        if ($code && function_exists('token_get_all')) {
+            $tokens = array();
+            foreach (token_get_all($code) as $token) {
+                if (!is_array($token) || !in_array($token[0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) {
+                    $tokens[] = $token;
+                }
+            }
+            foreach ($tokens as $i => $token) {
+                $statement_start = 0 === $i || ';' === $tokens[$i - 1] || (is_array($tokens[$i - 1]) && T_OPEN_TAG === $tokens[$i - 1][0]);
+                if ($statement_start && is_array($token) && T_VARIABLE === $token[0] && isset($tokens[$i + 3])
+                    && '=' === $tokens[$i + 1] && ';' === $tokens[$i + 3]
+                    && is_array($tokens[$i + 2]) && in_array($tokens[$i + 2][0], array(T_CONSTANT_ENCAPSED_STRING, T_LNUMBER), true)) {
+                    $value = $tokens[$i + 2][1];
+                    $values[substr($token[1], 1)] = T_LNUMBER === $tokens[$i + 2][0] ? $value : substr($value, 1, -1);
+                }
+            }
+        } elseif ($code && preg_match_all('/^\s*\$(wp_version|wp_local_package)\s*=\s*[\'"]([^\'"]+)[\'"]\s*;/m', $code, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $match) {
+                $values[$match[1]] = $match[2];
+            }
+        }
+
+        self::$version_php = array('key' => $key, 'values' => $values);
+        return $values;
     }
 
     /**
-     * version.php legitimately differs between packages/hosts. Accept it as long
-     * as it contains nothing but variable assignments of plain values; anything
-     * else (function calls, includes, eval...) means it was tampered with.
+     * version.php legitimately differs between packages/hosts. Accept it only
+     * when every statement is "$variable = <literal>;" (strings, numbers, and
+     * array literals of them). Anything else, including dynamic calls such as
+     * $_REQUEST['a']($_REQUEST['b']), means it was tampered with.
      */
     public static function version_php_is_benign($path) {
         $code = @file_get_contents($path);
@@ -130,17 +168,84 @@ class ErrorVault_Security_Scanner {
             return false;
         }
 
-        $allowed = array(T_OPEN_TAG, T_WHITESPACE, T_COMMENT, T_DOC_COMMENT, T_VARIABLE, T_CONSTANT_ENCAPSED_STRING, T_LNUMBER, T_DNUMBER, T_ARRAY, T_DOUBLE_ARROW);
+        $tokens = array();
         foreach (token_get_all($code) as $token) {
-            if (is_array($token)) {
-                if (!in_array($token[0], $allowed, true)) {
-                    return false;
-                }
-            } elseif (!in_array($token, array('=', ';', ',', '(', ')', '[', ']'), true)) {
-                return false;
+            if (!is_array($token) || !in_array($token[0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) {
+                $tokens[] = $token;
             }
         }
+        if (!$tokens || !is_array($tokens[0]) || T_OPEN_TAG !== $tokens[0][0]) {
+            return false;
+        }
+
+        $count = count($tokens);
+        $i = 1;
+        while ($i < $count) {
+            $token = $tokens[$i];
+            if (is_array($token) && T_CLOSE_TAG === $token[0]) {
+                // Only trailing whitespace may follow a closing tag.
+                for ($j = $i + 1; $j < $count; $j++) {
+                    if (!is_array($tokens[$j]) || T_INLINE_HTML !== $tokens[$j][0] || '' !== trim($tokens[$j][1])) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if (!is_array($token) || T_VARIABLE !== $token[0] || !isset($tokens[$i + 1]) || '=' !== $tokens[$i + 1]) {
+                return false;
+            }
+            $i = self::skip_literal($tokens, $i + 2);
+            if ($i < 0 || !isset($tokens[$i]) || ';' !== $tokens[$i]) {
+                return false;
+            }
+            $i++;
+        }
         return true;
+    }
+
+    /**
+     * Index just past a literal (string, number, or array of literals) starting at
+     * $i, or -1 if there isn't one.
+     */
+    private static function skip_literal(array $tokens, $i, $depth = 0) {
+        if ($depth > 4 || !isset($tokens[$i])) {
+            return -1;
+        }
+        $token = $tokens[$i];
+        if ('-' === $token || '+' === $token) {
+            $next = isset($tokens[$i + 1]) ? $tokens[$i + 1] : null;
+            return is_array($next) && in_array($next[0], array(T_LNUMBER, T_DNUMBER), true) ? $i + 2 : -1;
+        }
+        if (is_array($token) && in_array($token[0], array(T_CONSTANT_ENCAPSED_STRING, T_LNUMBER, T_DNUMBER), true)) {
+            return $i + 1;
+        }
+        if (is_array($token) && T_ARRAY === $token[0] && isset($tokens[$i + 1]) && '(' === $tokens[$i + 1]) {
+            $close = ')';
+            $i += 2;
+        } elseif ('[' === $token) {
+            $close = ']';
+            $i += 1;
+        } else {
+            return -1;
+        }
+        while (isset($tokens[$i]) && $close !== $tokens[$i]) {
+            $i = self::skip_literal($tokens, $i, $depth + 1);
+            if ($i < 0) {
+                return -1;
+            }
+            if (isset($tokens[$i]) && is_array($tokens[$i]) && T_DOUBLE_ARROW === $tokens[$i][0]) {
+                $i = self::skip_literal($tokens, $i + 1, $depth + 1);
+                if ($i < 0) {
+                    return -1;
+                }
+            }
+            if (isset($tokens[$i]) && ',' === $tokens[$i]) {
+                $i++;
+            } elseif (!isset($tokens[$i]) || $close !== $tokens[$i]) {
+                return -1;
+            }
+        }
+        return isset($tokens[$i]) ? $i + 1 : -1;
     }
 
     public static function is_wp2shell_vulnerable($version = null) {
@@ -151,7 +256,10 @@ class ErrorVault_Security_Scanner {
     }
 
     public static function virtual_patch_active() {
-        return self::is_wp2shell_vulnerable(self::installed_wp_version()) && apply_filters('errorvault_wp2shell_virtual_patch', true);
+        // Vulnerable if either the code on disk or the code this request runs is: after
+        // an update outside wp-admin (e.g. WP-CLI), the opcode cache can still serve old code.
+        return (self::is_wp2shell_vulnerable(self::installed_wp_version()) || self::is_wp2shell_vulnerable(get_bloginfo('version')))
+            && apply_filters('errorvault_wp2shell_virtual_patch', true);
     }
 
     /**
@@ -159,21 +267,22 @@ class ErrorVault_Security_Scanner {
      * Logged-in editors (the block editor uses the batch API) are unaffected.
      */
     public static function block_wp2shell_batch($result, $server, $request) {
-        if (null !== $result || !self::virtual_patch_active() || is_user_logged_in()) {
+        if (null !== $result) {
             return $result;
         }
 
         // REST routes match case-insensitively and tolerate extra leading slashes.
+        // Cheap checks first: this runs on every REST request.
         $route = strtolower(ltrim((string) $request->get_route(), '/'));
-        if (strpos($route, 'batch/v1') === 0) {
-            return new WP_Error(
-                'errorvault_batch_blocked',
-                __('The REST batch API is disabled for anonymous requests until WordPress is updated.', 'errorvault'),
-                array('status' => 403)
-            );
+        if (0 !== strpos($route, 'batch/v1') || is_user_logged_in() || !self::virtual_patch_active()) {
+            return $result;
         }
 
-        return $result;
+        return new WP_Error(
+            'errorvault_batch_blocked',
+            __('The REST batch API is disabled for anonymous requests until WordPress is updated.', 'errorvault'),
+            array('status' => 403)
+        );
     }
 
     public static function vulnerable_core_notice() {
@@ -869,19 +978,24 @@ class ErrorVault_Security_Scanner {
         return $themes;
     }
 
+    /**
+     * PHP files in a theme folder, for the report only (a lower bound past $limit).
+     * The content walk inspects every one of these files and reports unreadable
+     * folders itself, so neither the limit nor a read error is a gap in the scan:
+     * recording one here marked every scan of a site with a large theme "partial".
+     */
     private function count_php_files($dir, $limit = 3000) {
         if (!is_dir($dir) || is_link($dir)) { return 0; }
         $walked = 0;
         $php_count = 0;
         try {
-            $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
+            $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::LEAVES_ONLY, RecursiveIteratorIterator::CATCH_GET_CHILD);
             foreach ($it as $file) {
-                if (++$walked > $limit) { $this->coverage_gap('Theme PHP count limit reached: ' . $this->relative($dir)); return $php_count; }
+                if (++$walked > $limit) { break; }
                 if ($file->isFile() && self::php_filename($file->getFilename())) { $php_count++; }
             }
         } catch (Exception $e) {
-            $this->coverage_gap('Theme directory unreadable: ' . $this->relative($dir));
-            return 0;
+            // The theme folder itself can't be opened; the content walk reports it.
         }
         return $php_count;
     }
@@ -1116,13 +1230,18 @@ class ErrorVault_Security_Scanner {
         $uploads_base = wp_normalize_path(isset($uploads['basedir']) ? $uploads['basedir'] : WP_CONTENT_DIR . '/uploads');
         $plugins_base = wp_normalize_path(WP_PLUGIN_DIR);
         $content_patterns = $this->iocs['content_dir_patterns'];
+        // The last restore's undo point: a saved copy of the site as it was before the
+        // restore. Re-flagging those files would only invite quarantining the undo point.
+        $restore = get_option('errorvault_last_restore');
+        $undo_dir = is_array($restore) && !empty($restore['work']) ? wp_normalize_path((string) $restore['work']) : '';
 
         try {
             $dir = new RecursiveDirectoryIterator($base, FilesystemIterator::SKIP_DOTS);
-            $filter = new RecursiveCallbackFilterIterator($dir, function ($current) use ($skip) {
+            $filter = new RecursiveCallbackFilterIterator($dir, function ($current) use ($skip, $undo_dir) {
                 if (!$current->isDir()) {
                     return true;
                 }
+                if ('' !== $undo_dir && wp_normalize_path($current->getPathname()) === $undo_dir) { return false; }
                 if ($current->isLink() || !is_readable($current->getPathname())) { $this->coverage_gap('Directory unreadable or linked: ' . $this->relative($current->getPathname())); return false; }
                 $name = $current->getFilename();
                 $skipped = in_array($name, $skip, true) || 0 === strpos($name, 'errorvault-quarantine');
@@ -1154,7 +1273,13 @@ class ErrorVault_Security_Scanner {
 
             $name = $file->getFilename();
             $rel = $this->relative($path);
-            $size = (int) $file->getSize();
+            // Not SplFileInfo::getSize(): it throws when stat fails (a file deleted mid-walk,
+            // or inside a folder that can be listed but not entered), ending the whole scan.
+            $size = @filesize($path);
+            if (false === $size) {
+                if (self::php_filename($name)) { $this->coverage_gap('File could not be read: ' . $rel); }
+                continue;
+            }
             $is_php = self::php_filename($name);
             $in_uploads = 0 === strpos($path, $uploads_base . '/');
 
@@ -1197,7 +1322,7 @@ class ErrorVault_Security_Scanner {
                 continue;
             }
 
-            if ($file->getMTime() > time() - 7 * DAY_IN_SECONDS && count($this->recent_php) < self::MAX_LIST) {
+            if ((int) @filemtime($path) > time() - 7 * DAY_IN_SECONDS && count($this->recent_php) < self::MAX_LIST) {
                 $this->recent_php[] = $rel;
             }
 
@@ -1215,9 +1340,11 @@ class ErrorVault_Security_Scanner {
     }
 
     private function is_silence_index($path, $name, $size) {
-        if ($size > self::MAX_READ_BYTES) { return false; }
+        // PHP runs any file whose name contains ".phar" as a PHAR, whatever its bytes.
+        if ($size > self::MAX_READ_BYTES || false !== stripos($name, '.phar')) { return false; }
         $content = @file_get_contents($path);
-        return false !== $content && ErrorVault_Security_Evidence::inert_php($content);
+        return false !== $content && !ErrorVault_Security_Evidence::too_dense_to_tokenize($content)
+            && ErrorVault_Security_Evidence::inert_php($content);
     }
 
     /**
@@ -1241,6 +1368,11 @@ class ErrorVault_Security_Scanner {
             $this->ioc_hash_hits[] = $rel;
         }
 
+        if (!ErrorVault_Security_Evidence::archive_magic($content) && ErrorVault_Security_Evidence::too_dense_to_tokenize($content)) {
+            $this->coverage_gap('File too dense to inspect within the memory limit: ' . $rel);
+            return;
+        }
+
         $hit = self::match_signatures($content, $size);
         if ($hit && count($this->signature_hits[$hit[0]]) >= self::MAX_LIST) { $this->coverage_gap('Signature finding list capped'); }
         if ($hit && count($this->signature_hits[$hit[0]]) < self::MAX_LIST) {
@@ -1253,8 +1385,14 @@ class ErrorVault_Security_Scanner {
      * Returns array(severity, reason) or null.
      */
     public static function match_signatures($content, $size) {
-        if (ErrorVault_Security_Evidence::inert_php($content)) { return null; }
-        $executable = ErrorVault_Security_Evidence::executable_text($content);
+        if (ErrorVault_Security_Evidence::archive_magic($content)) {
+            return array('warning', 'packed PHAR/archive data in a PHP file (runs when the name contains .phar)');
+        }
+        // inspect_file() reports these as a coverage gap before getting here.
+        if (ErrorVault_Security_Evidence::too_dense_to_tokenize($content)) { return null; }
+        $analysis = ErrorVault_Security_Evidence::analyze($content);
+        if ($analysis['inert']) { return null; }
+        $executable = $analysis['executable'];
         $critical = array(
             'eval() of a decoded payload' => '/\beval\s*\(\s*(?:@\s*)?(?:base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|strrev|hex2bin|convert_uudecode)\s*\(/i',
             'runs shell commands from request input' => '/\b(?:system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec)\s*\(\s*(?:@\s*)?(?:(?:stripslashes|base64_decode|trim|urldecode)\s*\(\s*)?\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b/i',
@@ -1274,27 +1412,20 @@ class ErrorVault_Security_Scanner {
         // conservative to avoid turning normal validation code into a critical hit.
         $tainted_var = '\$([A-Za-z_][A-Za-z0-9_]*)';
         $request_expr = '(?:(?:stripslashes|base64_decode|trim|urldecode)\s*\(\s*)?\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b[^;]{0,160}';
-        if (@preg_match('/' . $tainted_var . '\s*=\s*' . $request_expr . ';.{0,900}\b(?:system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec|eval|assert)\s*\(\s*\$\\1\b/is', $executable)) {
+        // Method calls ($db->exec($sql), $this->$action(), self::$m(), new $class()) are
+        // ordinary dispatch, not the bare function calls these webshells use.
+        if (@preg_match('/' . $tainted_var . '\s*=\s*' . $request_expr . ';.{0,900}(?<!->)(?<!-> )(?<!::)(?<!:: )\b(?:system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec|eval|assert)\s*\(\s*\$\\1\b/is', $executable)) {
             return array('critical', 'passes request-derived variable to code/command execution');
         }
-        if (@preg_match('/' . $tainted_var . '\s*=\s*' . $request_expr . ';.{0,900}\$\\1\s*\(/is', $executable)) {
+        if (@preg_match('/' . $tainted_var . '\s*=\s*' . $request_expr . ';.{0,900}(?<![>:\w])(?<!-> )(?<!:: )(?<!new )\$\\1\s*\(/is', $executable)) {
             return array('critical', 'calls a request-derived function name');
         }
 
-        $tokens = ErrorVault_Security_Evidence::tokens($content);
-        foreach ($tokens as $index => $token) {
-            if (is_array($token) && in_array($token[0], array(T_INCLUDE, T_INCLUDE_ONCE, T_REQUIRE, T_REQUIRE_ONCE), true)) {
-                for ($j = $index + 1; $j < min(count($tokens), $index + 16); $j++) {
-                    $next = $tokens[$j];
-                    if (';' === $next) { break; }
-                    if (!is_array($next) || T_CONSTANT_ENCAPSED_STRING !== $next[0]) { continue; }
-                    if (preg_match('/(?:\\\\x[0-9a-fA-F]{2}){4,}/', $next[1])) { return array('warning', 'includes a hex-encoded path'); }
-                    if (preg_match('/\.(?:ico|png|jpe?g|gif|txt|log)["\']$/i', $next[1])) { return array('warning', 'includes a non-PHP file (image/text)'); }
-                }
-            }
+        foreach ($analysis['includes'] as $literal) {
+            if (preg_match('/(?:\\\\x[0-9a-fA-F]{2}){4,}/', $literal)) { return array('warning', 'includes a hex-encoded path'); }
+            if (preg_match('/\.(?:ico|png|jpe?g|gif|txt|log)["\']$/i', $literal)) { return array('warning', 'includes a non-PHP file (image/text)'); }
         }
-        $comment_free = '';
-        foreach ($tokens as $token) { $comment_free .= is_array($token) ? $token[1] : $token; }
+        $comment_free = $analysis['comment_free'];
         $warning = array(
             'webshell marker (may be a security signature database)' => '/\b(?:FilesMan|WSOsetcookie|b374k|r57shell|c99shell|IndoXploit|AnonymousFox)\b/i',
             'long hex-escaped string' => '/(?:\\\\x[0-9a-fA-F]{2}){40,}/',

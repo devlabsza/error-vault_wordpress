@@ -14,8 +14,10 @@
  *  - rotate_salts / logout_all: sign everyone out, including an attacker.
  *
  * Nothing sent by the portal is ever written to disk or executed as code.
- * Site owners can turn remote actions off in Settings, Error-Vault, or with
- * define('ERRORVAULT_DISABLE_REMOTE_ACTIONS', true);
+ * Remote actions (including backup restore and undo) stay off until a site owner
+ * turns them on in Settings, Error-Vault; requests that arrive while they're off are
+ * refused and shown in wp-admin. define('ERRORVAULT_DISABLE_REMOTE_ACTIONS', true);
+ * keeps them off regardless.
  */
 
 if (!defined('ABSPATH')) {
@@ -27,6 +29,7 @@ class ErrorVault_Security_Actions {
     const EXECUTED_OPTION = 'errorvault_executed_actions';
     const QUARANTINE_OPTION = 'errorvault_quarantine';
     const QUARANTINE_DIR_OPTION = 'errorvault_quarantine_dir';
+    const REFUSED_OPTION = 'errorvault_refused_action';
 
     const TYPES = array(
         'quarantine_path', 'restore_quarantine', 'remove_plugin', 'reinstall_plugin',
@@ -56,6 +59,40 @@ class ErrorVault_Security_Actions {
         }
         $settings = get_option('errorvault_settings', array());
         return !empty($settings['allow_remote_actions']) && empty($settings['disable_remote_actions']);
+    }
+
+    public static function init_admin() {
+        add_action('admin_notices', array(__CLASS__, 'refused_notice'));
+    }
+
+    /**
+     * Remote actions are opt-in, and sites updated from versions where they were on
+     * by default start with them off. Say so when the dashboard's request was refused,
+     * rather than leaving the owner to find a failed action in the portal.
+     */
+    public static function refused_notice() {
+        if (!current_user_can('manage_options') || self::enabled()) {
+            return;
+        }
+        $refused = get_option(self::REFUSED_OPTION);
+        if (!is_array($refused) || time() - (int) $refused['time'] > 7 * DAY_IN_SECONDS) {
+            return;
+        }
+
+        $type = in_array($refused['type'], self::TYPES, true) ? str_replace('_', ' ', $refused['type']) : __('an action', 'errorvault');
+        echo '<div class="notice notice-warning"><p><strong>' . esc_html__('Error-Vault:', 'errorvault') . '</strong> ';
+        if (defined('ERRORVAULT_DISABLE_REMOTE_ACTIONS') && ERRORVAULT_DISABLE_REMOTE_ACTIONS) {
+            /* translators: %s: action name, e.g. "restore backup" */
+            printf(esc_html__('The Error-Vault dashboard asked this site to %s, but ERRORVAULT_DISABLE_REMOTE_ACTIONS in wp-config.php turns remote actions off, so nothing was done.', 'errorvault'), esc_html($type));
+        } else {
+            printf(
+                /* translators: 1: action name, e.g. "restore backup"; 2: link to the settings page */
+                esc_html__('The Error-Vault dashboard asked this site to %1$s, but remote actions are turned off, so nothing was done. To allow it, turn them on in %2$s, then run the action again from the dashboard.', 'errorvault'),
+                esc_html($type),
+                '<a href="' . esc_url(admin_url('options-general.php?page=errorvault')) . '">' . esc_html__('Settings, Error-Vault', 'errorvault') . '</a>'
+            );
+        }
+        echo '</p></div>';
     }
 
     /* ------------------------------------------------------------------
@@ -92,8 +129,9 @@ class ErrorVault_Security_Actions {
 
             if (!self::enabled()) {
                 $status = 'failed';
-                $message = 'Remote cleanup actions are turned off in the Error-Vault plugin settings on this site.';
+                $message = 'Remote actions are turned off in the Error-Vault plugin settings on this site. Turn them on there, then run the action again.';
                 $data = array();
+                update_option(self::REFUSED_OPTION, array('type' => $type, 'time' => time()), false);
             } elseif (!in_array($type, self::TYPES, true)) {
                 $status = 'failed';
                 $message = 'Unknown action type.';
@@ -227,7 +265,12 @@ class ErrorVault_Security_Actions {
             throw new Exception('Invalid path.');
         }
 
-        $full = ('/' === $path[0]) ? $path : ABSPATH . $path;
+        $full = ('/' === $path[0] || preg_match('#^[A-Za-z]:/#', $path)) ? $path : ABSPATH . $path;
+        if (is_link(rtrim($full, '/'))) {
+            // Quarantining through a link would copy and then delete what it points to,
+            // which may be shared with other sites.
+            throw new Exception($path . ' is a symbolic link. Remove the link itself by hand.');
+        }
         $real = realpath($full);
         if (false === $real) {
             throw new Exception('Not found: ' . $path . ' (already removed?)');
@@ -255,7 +298,8 @@ class ErrorVault_Security_Actions {
         if ($real === $abspath . '/.htaccess') {
             throw new Exception('The root .htaccess is never quarantined (it would break permalinks). Edit it by hand.');
         }
-        if (0 === strpos($real . '/', wp_normalize_path(ERRORVAULT_PLUGIN_DIR))) {
+        // Case-insensitive: on macOS/Windows filesystems "ErrorVault" is the same folder.
+        if (0 === stripos($real . '/', wp_normalize_path(ERRORVAULT_PLUGIN_DIR))) {
             throw new Exception('Refusing to quarantine the Error-Vault plugin.');
         }
 
@@ -465,7 +509,7 @@ class ErrorVault_Security_Actions {
         if (!preg_match('/^[a-z0-9._-]+$/i', $slug) || '.' === $slug[0]) {
             throw new Exception('Invalid plugin slug.');
         }
-        if (dirname(plugin_basename(ERRORVAULT_PLUGIN_DIR . 'errorvault.php')) === $slug) {
+        if (0 === strcasecmp(dirname(plugin_basename(ERRORVAULT_PLUGIN_DIR . 'errorvault.php')), $slug)) {
             throw new Exception('Refusing to touch the Error-Vault plugin.');
         }
 
@@ -482,9 +526,15 @@ class ErrorVault_Security_Actions {
         list($file) = self::find_plugin($slug);
 
         $path = WP_PLUGIN_DIR . '/' . ($file && '.' === dirname($file) ? $file : $slug);
-        if (!file_exists($path)) {
+        if (!file_exists($path) && !is_link($path)) {
             throw new Exception('Plugin ' . $slug . ' is not installed (already removed?).');
         }
+
+        // The same rails as quarantine_path, checked before anything changes: nothing
+        // outside the install, no symlinked plugin (its shared source would be emptied),
+        // never Error-Vault itself.
+        $real = self::resolve(self::relative(wp_normalize_path($path)));
+        self::assert_quarantinable($real);
 
         if ($file) {
             deactivate_plugins($file, true);
@@ -493,7 +543,6 @@ class ErrorVault_Security_Actions {
             }
         }
 
-        $real = wp_normalize_path(realpath($path));
         $result = self::quarantine($real, self::relative($real), is_dir($real) ? 'dir' : 'file');
         $result['message'] = 'Deactivated and quarantined plugin ' . $slug . '.';
         return $result;

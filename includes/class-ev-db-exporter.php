@@ -134,10 +134,14 @@ class EV_DB_Exporter {
     private function get_tables() {
         // Only this site's tables: a database shared by several installs must
         // not have the other sites' tables in this site's backup.
+        // "LIKE 'wp\_%'" alone also matches another install prefixed "wp_shop_".
         $prefix = is_multisite() ? $this->wpdb->base_prefix : $this->wpdb->prefix;
-        $results = $this->wpdb->get_col($this->wpdb->prepare('SHOW TABLES LIKE %s', $this->wpdb->esc_like($prefix) . '%'));
+        $results = array_values(array_filter((array) $this->wpdb->get_col($this->wpdb->prepare('SHOW TABLES LIKE %s', $this->wpdb->esc_like($prefix) . '%')), 'is_string'));
+        $foreign = EV_Backup_Helpers::foreign_prefixes($results, $prefix, is_multisite());
 
-        return array_values(array_filter((array) $results, 'is_string'));
+        return array_values(array_filter($results, function ($table) use ($prefix, $foreign) {
+            return EV_Backup_Helpers::is_site_table($table, $prefix, $foreign);
+        }));
     }
 
     /**

@@ -296,7 +296,7 @@ EV_Backup_Helpers::trigger_manual_poll();
 ### For Testing
 1. Configure ErrorVault API in plugin settings
 2. Request backup from ErrorVault dashboard
-3. Monitor log file: `wp-content/uploads/errorvault-backups/backup.log`
+3. Monitor the backup log (Settings > Error-Vault, or `backup.log` in the private folder named by the `errorvault_private_dir` option)
 4. Verify backup appears in ErrorVault
 5. Test error scenarios (bad token, large file, etc.)
 

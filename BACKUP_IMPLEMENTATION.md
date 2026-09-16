@@ -110,15 +110,19 @@ run_backup($backup_id, $include_uploads)
 
 ## File Locations
 
+### Private Folder
+- **Location:** `errorvault-private-<random>/` in the folder above WordPress, or in `wp-content/` if that isn't writable (stored in the `errorvault_private_dir` option)
+- **Why:** dumps, archives and the log used to live in `wp-content/uploads/errorvault-backups/`, where anyone could download them. Older copies there are deleted on the next backup.
+
 ### Temporary Files
-- **Location:** `wp-content/uploads/errorvault-backups/tmp/`
+- **Location:** `<private folder>/tmp/`
 - **Files:**
   - `backup-{id}.sql` - Database export
   - `backup-{id}.zip` - Final archive
-- **Cleanup:** Automatically deleted after upload
+- **Cleanup:** Deleted after upload or failure; leftovers from killed runs are removed after 6 hours
 
 ### Logs
-- **Location:** `wp-content/uploads/errorvault-backups/backup.log`
+- **Location:** `<private folder>/backup.log`
 - **Format:** `[YYYY-MM-DD HH:MM:SS] Message`
 - **Also logged to:** PHP error_log
 
@@ -399,12 +403,12 @@ print_r($requirements);
 ### Backups Not Running
 1. Check cron is scheduled: `wp_next_scheduled('ev_backup_poll_event')`
 2. Check API configuration in plugin settings
-3. Review backup log: `wp-content/uploads/errorvault-backups/backup.log`
+3. Review backup log: `backup.log` in the private folder (see File Locations)
 4. Check PHP error log
 
 ### Backup Fails Immediately
 1. Check system requirements: `EV_Backup_Helpers::check_requirements()`
-2. Verify uploads directory is writable
+2. Verify the folder above WordPress or `wp-content/` is writable (for the private folder)
 3. Check available disk space
 4. Review error logs
 
@@ -425,7 +429,7 @@ print_r($requirements);
 ### File Permissions
 - Temporary files created with default WordPress permissions
 - Files deleted immediately after upload
-- Log files stored in uploads directory (protected by .htaccess)
+- Dumps, archives and logs are kept in a private folder with a random name, outside the web root when possible; `.htaccess` and `index.php` deny rules are added for servers that honour them
 
 ### API Authentication
 - All requests use X-API-Token header
@@ -490,7 +494,7 @@ print_r($requirements);
 ### Enable Debug Logging
 All backup operations are automatically logged to:
 1. PHP error_log
-2. `wp-content/uploads/errorvault-backups/backup.log`
+2. `backup.log` in the private folder (see File Locations)
 
 ### Log Format
 ```

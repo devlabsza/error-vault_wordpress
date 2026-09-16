@@ -177,5 +177,48 @@ PHP;
     check(has_key(prop($s,'findings'),'critical:test') && has_key(prop($s,'findings'),'files:truncated'),'Critical evidence and truncation survive capping');
     $s=scanner();invoke($s,'add_finding','duplicate','files','Review','info',false,'First');invoke($s,'add_finding','duplicate','files','Review','warning',true,'Second');
     check(1===count(prop($s,'findings')) && 'warning'===prop($s,'findings')[0]['status'],'Repeated signals keep strongest evidence once');
+    // Dropped whitespace/comments used to fuse a keyword with the sink ("echoshell_exec").
+    foreach (array('<?php echo shell_exec($_GET["cmd"]); ?>', '<?php print passthru($_REQUEST["c"]);', '<?php return eval(base64_decode("aGVsbG8="));', '<?php if (isset($_GET["c"])) echo/**/shell_exec($_GET["c"]);', '<?php $c = $_POST["c"]; echo system($c);') as $source) {
+        $hit = ErrorVault_Security_Scanner::match_signatures($source, strlen($source));
+        check($hit && 'critical' === $hit[0], 'Sink after a keyword or comment is still detected');
+    }
+    // Method dispatch on request input is ordinary routing, not a request-named function call.
+    foreach (array('<?php $method = $_SERVER["REQUEST_METHOD"]; if (in_array($method, array("get", "post"), true)) { return $this->$method(); }', '<?php $sql = $_POST["q"]; $pdo->exec($sql);', '<?php $class = $_GET["type"]; return new $class();', '<?php $action = $_REQUEST["a"]; if (in_array($action, $allowed, true)) { self::$action(); }') as $source) {
+        check(null === ErrorVault_Security_Scanner::match_signatures($source, strlen($source)), 'Method dispatch is not a webshell signature');
+    }
+    // Whole-archive compressed PHARs contain no "<?" but run when the name contains ".phar".
+    $packed = gzencode('<?php system($_GET["cmd"]); __HALT_COMPILER();');
+    check(!ErrorVault_Security_Evidence::inert_php($packed) && !ErrorVault_Security_Evidence::inert_php("PK\x03\x04packed"), 'Packed archive bytes are not inert data');
+    $hit = ErrorVault_Security_Scanner::match_signatures($packed, strlen($packed));
+    check($hit && 'warning' === $hit[0], 'Packed archive in a PHP file requests review');
+    put('wp-content/uploads/cache.phar.php', $packed);
+    $s = scanner(); invoke($s, 'walk_content');
+    check(in_array('wp-content/uploads/cache.phar.php', prop($s, 'php_in_uploads'), true), 'Packed PHAR in uploads is flagged');
+    // A file dense enough to exhaust memory when tokenized is a coverage gap, not a fatal error.
+    $memory_limit = ini_get('memory_limit');
+    ini_set('memory_limit', '128M');
+    $dense = '<?php ' . str_repeat('1 ', 524288);
+    check(ErrorVault_Security_Evidence::too_dense_to_tokenize($dense), 'Dense file is not tokenized');
+    check(!ErrorVault_Security_Evidence::too_dense_to_tokenize(file_get_contents(__DIR__ . '/../includes/class-errorvault-security-scanner.php')), 'Ordinary source is tokenized');
+    $big = put('dense.php', $dense);
+    $s = scanner(); invoke($s, 'inspect_file', $big, 'dense.php', filesize($big));
+    check(prop($s, 'truncated') && in_array('File too dense to inspect within the memory limit: dense.php', prop($s, 'coverage_gaps'), true), 'Dense file reported as a coverage gap');
+    ini_set('memory_limit', $memory_limit);
+    // version.php: only plain "$variable = literal;" statements are benign, and comments can't change the version.
+    $genuine = "<?php\n/**\n * WordPress Version\n */\n\$wp_version = '6.8.2';\n\$wp_db_version = 58975;\n\$tinymce_version = '49110-20250317';\n\$required_php_version = '7.2.24';\n\$required_php_extensions = array(\n\t'json',\n\t'hash',\n);\n\$required_mysql_version = '5.5.5';\n\$wp_local_package = 'de_DE';\n";
+    $vp = put('wp-includes/version.php', $genuine);
+    check(ErrorVault_Security_Scanner::version_php_is_benign($vp), 'Plain version.php accepted');
+    check('6.8.2' === ErrorVault_Security_Scanner::installed_wp_version() && 'de_DE' === ErrorVault_Security_Scanner::installed_wp_package_locale(), 'Version and package locale read from version.php');
+    foreach (array("\$_REQUEST['a'](\$_REQUEST['b']);", "'system'(\$_GET['c']);", "\$x = \$_GET['x'];", "include '/tmp/x';") as $payload) {
+        put('wp-includes/version.php', $genuine . $payload);
+        check(!ErrorVault_Security_Scanner::version_php_is_benign($vp), 'Code appended to version.php is not benign');
+    }
+    put('wp-includes/version.php', str_replace("\$wp_version = '6.8.2';", "/* \$wp_version = '0.0.1'; */\n\$wp_version = '6.8.2';", $genuine));
+    check('6.8.2' === ErrorVault_Security_Scanner::installed_wp_version(), 'Commented-out assignment cannot change the version checked');
+    // Counting a large theme's files is informational: it must not mark the whole scan partial.
+    for ($i = 0; $i < 3005; $i++) { put('wp-content/themes/big/assets/icon-' . $i . '.svg', '<svg/>'); }
+    put('wp-content/themes/big/functions.php', '<?php // theme');
+    $s = scanner(); invoke($s, 'count_php_files', WP_CONTENT_DIR . '/themes/big', 3000);
+    check(!prop($s, 'truncated'), 'Theme file-count limit is not a coverage gap');
     echo "PASS: $checks security regression checks\n";
 } finally { cleanup($root); }

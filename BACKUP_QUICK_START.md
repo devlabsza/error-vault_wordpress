@@ -41,8 +41,9 @@ foreach ($logs as $log) {
 ```
 
 ### Via File System
-- **Log file:** `wp-content/uploads/errorvault-backups/backup.log`
-- **Temp directory:** `wp-content/uploads/errorvault-backups/tmp/`
+- **Private folder:** `errorvault-private-<random>/` in the folder above WordPress, or in `wp-content/` if that isn't writable. The exact path is in the `errorvault_private_dir` option. Nothing backup-related is kept under the public uploads folder.
+- **Log file:** `<private folder>/backup.log`
+- **Temp directory:** `<private folder>/tmp/`
 
 ## Manual Testing
 
@@ -132,7 +133,7 @@ EV_Backup_Helpers::cleanup_temp_files();
 
 For issues or questions:
 1. Check `BACKUP_IMPLEMENTATION.md` for detailed documentation
-2. Review log file: `wp-content/uploads/errorvault-backups/backup.log`
+2. Review the log (Settings > Error-Vault, or `backup.log` in the private folder)
 3. Contact ErrorVault support with log details
 
 ## Quick Reference

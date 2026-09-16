@@ -107,7 +107,7 @@ class EV_Backup_Manager {
 
             $this->run_backup($backup_id, $include_uploads, $scope);
 
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             $this->log('Poll exception: ' . $e->getMessage());
             delete_transient('ev_backup_lock');
             return false;
@@ -141,12 +141,18 @@ class EV_Backup_Manager {
             @ini_set('max_execution_time', '0');
             @ini_set('memory_limit', '1024M');
             
-            $upload_dir = wp_upload_dir();
-            $tmp_dir = $upload_dir['basedir'] . '/errorvault-backups/tmp';
-            
-            if (!wp_mkdir_p($tmp_dir)) {
-                throw new Exception('Failed to create temporary directory: ' . $tmp_dir);
+            // Dumps and archives are built in a private folder, never under the public
+            // uploads folder (older versions did, where anyone could download them).
+            $tmp_dir = EV_Backup_Helpers::get_temp_dir();
+            if (!$tmp_dir) {
+                throw new Exception('No private folder for backup files: neither the folder above WordPress nor wp-content is writable.');
             }
+            if (!wp_mkdir_p($tmp_dir)) {
+                throw new Exception('Failed to create the private temporary folder for backups.');
+            }
+            EV_Backup_Helpers::write_deny_files($tmp_dir);
+            EV_Backup_Helpers::purge_legacy_public_files();
+            EV_Backup_Helpers::cleanup_temp_files(6 * HOUR_IN_SECONDS); // left by runs that were killed
 
             $sql_path = $tmp_dir . '/backup-' . $backup_id . '.sql';
             $zip_path = $tmp_dir . '/backup-' . $backup_id . '.zip';
@@ -228,7 +234,7 @@ class EV_Backup_Manager {
             delete_transient('ev_backup_lock');
             return true;
 
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
             $elapsed = isset($start_time) ? (time() - $start_time) : 0;
             
             // Re-get failure count and increment
@@ -382,7 +388,7 @@ class EV_Backup_Manager {
                 }
                 $name = $current->getFilename();
                 if ($current->isDir()) {
-                    if (in_array($name, $skip_anywhere, true) || 0 === strpos($name, 'errorvault-quarantine')) {
+                    if (in_array($name, $skip_anywhere, true) || EV_Backup_Helpers::is_own_folder($name)) {
                         return false;
                     }
                     if (wp_normalize_path($current->getPath()) === $root && in_array($name, $skip_top, true)) {
@@ -416,10 +422,14 @@ class EV_Backup_Manager {
     }
 
     /**
-     * Recursively add directory to ZIP
+     * Recursively add a directory (uploads) to the ZIP. Entry names come from the
+     * walked path rather than realpath(), so a symlinked uploads folder (or ".."
+     * in WP_CONTENT_DIR) keeps its layout. As for full backups, symlinks,
+     * unreadable files, .git / node_modules and Error-Vault's own folders
+     * (including the old public backup folder) are left out.
      */
     private function add_directory_to_zip($zip, $dir_path, $zip_path) {
-        $dir_path = rtrim($dir_path, '/');
+        $dir_path = wp_normalize_path(untrailingslashit($dir_path));
         $zip_path = rtrim($zip_path, '/');
 
         if (!is_dir($dir_path)) {
@@ -429,28 +439,39 @@ class EV_Backup_Manager {
             );
         }
 
-        $files = new RecursiveIteratorIterator(
-            new RecursiveDirectoryIterator($dir_path, RecursiveDirectoryIterator::SKIP_DOTS),
-            RecursiveIteratorIterator::SELF_FIRST
+        $filter = new RecursiveCallbackFilterIterator(
+            new RecursiveDirectoryIterator($dir_path, FilesystemIterator::SKIP_DOTS),
+            function ($current) {
+                if ($current->isLink()) {
+                    return false;
+                }
+                if (!$current->isDir()) {
+                    return true;
+                }
+                $name = $current->getFilename();
+                return !in_array($name, array('node_modules', '.git', 'errorvault-backups'), true) && !EV_Backup_Helpers::is_own_folder($name);
+            }
         );
 
         $file_count = 0;
-        foreach ($files as $file) {
-            $file_path = $file->getRealPath();
-            $relative_path = substr($file_path, strlen($dir_path) + 1);
+        foreach (new RecursiveIteratorIterator($filter, RecursiveIteratorIterator::SELF_FIRST) as $file) {
+            $relative_path = ltrim(substr(wp_normalize_path($file->getPathname()), strlen($dir_path)), '/');
             $zip_file_path = $zip_path . '/' . $relative_path;
 
             if ($file->isDir()) {
                 $zip->addEmptyDir($zip_file_path);
             } else {
-                if (!$zip->addFile($file_path, $zip_file_path)) {
+                if (!$file->isReadable()) {
+                    continue;
+                }
+                if (!$zip->addFile($file->getPathname(), $zip_file_path)) {
                     return array(
                         'success' => false,
                         'error' => 'Failed to add file to archive: ' . $relative_path,
                     );
                 }
                 $file_count++;
-                
+
                 if ($file_count % 100 === 0) {
                     $this->log('Added ' . $file_count . ' files to archive...');
                 }
@@ -759,14 +780,13 @@ class EV_Backup_Manager {
      */
     private function log($message) {
         error_log('[ErrorVault Backup] ' . $message);
-        
-        $log_file = wp_upload_dir()['basedir'] . '/errorvault-backups/backup.log';
-        $log_dir = dirname($log_file);
-        
-        if (!is_dir($log_dir)) {
-            wp_mkdir_p($log_dir);
+
+        // The log names backups in progress, so it lives in the private folder too.
+        $log_file = EV_Backup_Helpers::get_log_file_path();
+        if (!$log_file) {
+            return;
         }
-        
+
         $timestamp = current_time('Y-m-d H:i:s');
         $log_entry = '[' . $timestamp . '] ' . $message . "\n";
         

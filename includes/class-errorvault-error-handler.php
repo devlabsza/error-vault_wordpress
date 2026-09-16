@@ -100,7 +100,7 @@ class ErrorVault_Error_Handler {
                 'critical',
                 $exception->getFile(),
                 $exception->getLine(),
-                $exception->getTraceAsString()
+                $this->get_exception_trace($exception)
             ));
         });
 
@@ -109,14 +109,19 @@ class ErrorVault_Error_Handler {
             return;
         }
 
-        // Nobody else handles it. Don't rethrow (PHP would call this handler
-        // again, in a loop); keep it visible in the PHP error log and fail the
-        // request with a 500 instead of a blank 200.
-        error_log('PHP Fatal error:  Uncaught ' . $exception);
-        if (!headers_sent()) {
-            http_response_code(500);
-        }
+        // Nobody else handles it: rethrow so PHP records the usual "Uncaught" fatal
+        // error. PHP doesn't call this handler again for it, and WordPress's fatal
+        // error handler (the critical error page, recovery mode, pausing the broken
+        // plugin) only runs when error_get_last() sees that fatal error.
+        $this->rethrown = true;
+        throw $exception;
     }
+
+    /**
+     * Set when an uncaught exception was reported and rethrown, so the shutdown
+     * handler doesn't report the resulting fatal error a second time.
+     */
+    private $rethrown = false;
 
     /**
      * Handle shutdown (catch fatal errors)
@@ -127,6 +132,13 @@ class ErrorVault_Error_Handler {
         if (!$error || !in_array($error['type'], array(E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR), true)) {
             return;
         }
+        if ($this->rethrown && 0 === strpos($error['message'], 'Uncaught ')) {
+            return;
+        }
+
+        // A fatal error inside report() (e.g. out of memory) never reached the end of
+        // it; the flag would otherwise make this last report a no-op.
+        $this->reporting = false;
 
         // Send immediately for fatal errors
         $this->report(function () use ($error) {
@@ -269,11 +281,24 @@ class ErrorVault_Error_Handler {
     private function get_stack_trace() {
         $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
 
-        // Remove error handler frames
-        $trace = array_slice($trace, 3);
+        // Remove error handler frames: this method, the closure, report() and handle_error()
+        $trace = array_slice($trace, 4);
 
+        return $this->format_trace($trace);
+    }
+
+    /**
+     * An exception's trace without call arguments. getTraceAsString() includes
+     * them unless zend.exception_ignore_args is on (it's off by default), which
+     * would send values such as passwords on the call stack to Error-Vault.
+     */
+    private function get_exception_trace($exception) {
+        return $this->format_trace($exception->getTrace());
+    }
+
+    private function format_trace(array $trace) {
         $output = array();
-        foreach ($trace as $i => $frame) {
+        foreach (array_values($trace) as $i => $frame) {
             $file = isset($frame['file']) ? $frame['file'] : '[internal]';
             $line = isset($frame['line']) ? $frame['line'] : 0;
             $class = isset($frame['class']) ? $frame['class'] . $frame['type'] : '';

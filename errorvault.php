@@ -60,6 +60,9 @@ function errorvault_init() {
 
     // Backup restore: admin approval notice + the cron hook that runs approved restores
     EV_Backup_Restorer::init_admin();
+
+    // Notice when the dashboard asked for an action while remote actions are off
+    ErrorVault_Security_Actions::init_admin();
 }
 add_action('plugins_loaded', 'errorvault_init');
 

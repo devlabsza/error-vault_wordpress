@@ -31,41 +31,131 @@ class ErrorVault_Security_Evidence {
     public static function tokens($content, $mask_strings = false) {
         $result = array();
         foreach (token_get_all($content) as $token) {
-            if (is_array($token)) {
-                if (in_array($token[0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) { continue; }
-                $text = $token[1];
-                // Equivalent unescaped single/double quoted literals have identical meaning.
-                if (T_CONSTANT_ENCAPSED_STRING === $token[0] && false === strpos(substr($text, 1, -1), chr(92))) { $text = var_export(substr($text, 1, -1), true); }
-                if (T_OPEN_TAG === $token[0]) { $text = '<?php '; }
-                if ($mask_strings && in_array($token[0], array(T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE, T_INLINE_HTML), true)) { $text = "'LITERAL'"; }
-                $result[] = array($token[0], $text);
-            } else { $result[] = $token; }
+            $token = self::normalize_token($token, $mask_strings);
+            if (null !== $token) { $result[] = $token; }
         }
         return $result;
     }
 
+    /** One token as tokens() returns it, or null for whitespace/comments. */
+    private static function normalize_token($token, $mask_strings) {
+        if (!is_array($token)) { return $token; }
+        if (in_array($token[0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) { return null; }
+        $text = $token[1];
+        // Equivalent unescaped single/double quoted literals have identical meaning.
+        if (T_CONSTANT_ENCAPSED_STRING === $token[0] && false === strpos(substr($text, 1, -1), chr(92))) { $text = var_export(substr($text, 1, -1), true); }
+        if (T_OPEN_TAG === $token[0]) { $text = '<?php '; }
+        if ($mask_strings && in_array($token[0], array(T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE), true)) { $text = "'LITERAL'"; }
+        // Inline HTML holding "<?" stays visible: with short_open_tag off in the scanning
+        // process, short-tag code tokenizes as HTML, yet it runs where short tags are on.
+        if ($mask_strings && T_INLINE_HTML === $token[0] && false === strpos($text, '<?')) { $text = "'LITERAL'"; }
+        return array($token[0], $text);
+    }
+
     public static function executable_text($content) {
-        $text = '';
-        foreach (self::tokens($content, true) as $token) {
-            $text .= is_array($token) ? $token[1] : $token;
-        }
-        return $text;
+        return self::analyze($content)['executable'];
     }
 
     /** Empty directory guards and compiler-halted data are not executable payloads. */
     public static function inert_php($content) {
-        // Some caches use a .php suffix for plain data. Short tags remain reviewable.
-        if (false === strpos($content, '<?')) { return true; }
-        $tokens = self::tokens($content);
-        // __halt_compiler is safe only as the FIRST statement. All following bytes are data.
-        $prefix = self::tokens('<?php __halt_compiler();');
-        if (array_slice($tokens, 0, count($prefix)) === $prefix) { return true; }
-        if ($tokens && is_array(end($tokens)) && T_INLINE_HTML === end($tokens)[0] && '' === trim(end($tokens)[1])) { array_pop($tokens); }
-        if ($tokens && is_array(end($tokens)) && T_CLOSE_TAG === end($tokens)[0]) { array_pop($tokens); }
-        foreach (array('<?php', '<?php exit;', '<?php exit();', '<?php die;', '<?php die();') as $guard) {
-            if ($tokens === self::tokens($guard)) { return true; }
+        return self::analyze($content)['inert'];
+    }
+
+    /**
+     * Whole-archive gzip/bzip2 PHARs and zip PHARs contain no plain "<?", yet PHP
+     * runs them when the file name contains ".phar". No PHP file starts like this.
+     */
+    public static function archive_magic($content) {
+        return 0 === strncmp($content, "\x1f\x8b", 2)
+            || 0 === strncmp($content, "PK\x03\x04", 4)
+            || (bool) preg_match('/^BZh[1-9]/', substr($content, 0, 4));
+    }
+
+    /**
+     * token_get_all() needs roughly 150-400 bytes per token, and a dense 2 MB file
+     * can hold a million tokens: enough to hit memory_limit with a fatal error no
+     * try/catch can stop (a planted file could stop every scan). Estimate first.
+     */
+    public static function too_dense_to_tokenize($content) {
+        $estimate = preg_match_all('/[A-Za-z0-9_\x80-\xff]+|\s+|[^A-Za-z0-9_\x80-\xff\s]/', $content);
+        if (false === $estimate) {
+            return strlen($content) > 262144;
         }
-        return false;
+        $needed = $estimate * (PHP_VERSION_ID < 80200 ? 350 : 200);
+        $limit = self::memory_limit_bytes();
+        $available = $limit > 0 ? $limit - memory_get_usage() : PHP_INT_MAX;
+        return $needed > min($available * 0.75, 512 * 1024 * 1024);
+    }
+
+    private static function memory_limit_bytes() {
+        $value = trim((string) ini_get('memory_limit'));
+        if ('' === $value || '-1' === $value) { return -1; }
+        $bytes = (int) $value;
+        switch (strtolower(substr($value, -1))) {
+            case 'g': $bytes *= 1024; // no break
+            case 'm': $bytes *= 1024; // no break
+            case 'k': $bytes *= 1024;
+        }
+        return $bytes;
+    }
+
+    private static $analysis = array(null, null);
+
+    /**
+     * Everything the signature checks need from one tokenizer pass, without a
+     * second copy of the token array (both used to multiply peak memory):
+     *  - inert:        empty guard or compiler-halted data, not an executable payload
+     *  - executable:   code with string literals masked, and one space wherever the
+     *                  source had whitespace or a comment (so "echo shell_exec(" keeps
+     *                  its word boundary and \b-anchored signatures still match)
+     *  - comment_free: the same with literals intact
+     *  - includes:     string literals within 15 tokens after include/require
+     */
+    public static function analyze($content) {
+        if (self::$analysis[0] === $content) { return self::$analysis[1]; }
+        $result = array('inert' => false, 'executable' => '', 'comment_free' => '', 'includes' => array());
+
+        if (false === strpos($content, '<?')) {
+            // Some caches use a .php suffix for plain data. Packed PHARs are not data.
+            $result['inert'] = !self::archive_magic($content);
+        } else {
+            $head = array();
+            $count = 0;
+            $space = false;
+            $window = 0;
+            foreach (token_get_all($content) as $raw) {
+                if (is_array($raw) && in_array($raw[0], array(T_WHITESPACE, T_COMMENT, T_DOC_COMMENT), true)) { $space = true; continue; }
+                $plain = self::normalize_token($raw, false);
+                $masked = self::normalize_token($raw, true);
+                $separator = $space ? ' ' : '';
+                $space = false;
+                $result['executable'] .= $separator . (is_array($masked) ? $masked[1] : $masked);
+                $result['comment_free'] .= $separator . (is_array($plain) ? $plain[1] : $plain);
+                if (++$count <= 8) { $head[] = $plain; }
+
+                if (is_array($raw) && in_array($raw[0], array(T_INCLUDE, T_INCLUDE_ONCE, T_REQUIRE, T_REQUIRE_ONCE), true)) {
+                    $window = 15;
+                } elseif ($window > 0) {
+                    $window = ';' === $raw ? 0 : $window - 1;
+                    if (is_array($plain) && T_CONSTANT_ENCAPSED_STRING === $plain[0]) { $result['includes'][] = $plain[1]; }
+                }
+            }
+
+            // __halt_compiler is safe only as the FIRST statement. All following bytes are data.
+            $prefix = self::tokens('<?php __halt_compiler();');
+            if (array_slice($head, 0, count($prefix)) === $prefix) {
+                $result['inert'] = true;
+            } elseif ($count <= 8) {
+                if ($head && is_array(end($head)) && T_INLINE_HTML === end($head)[0] && '' === trim(end($head)[1])) { array_pop($head); }
+                if ($head && is_array(end($head)) && T_CLOSE_TAG === end($head)[0]) { array_pop($head); }
+                foreach (array('<?php', '<?php exit;', '<?php exit();', '<?php die;', '<?php die();') as $guard) {
+                    if ($head === self::tokens($guard)) { $result['inert'] = true; break; }
+                }
+            }
+        }
+
+        self::$analysis = array($content, $result);
+        return $result;
     }
 
     /** Match complete AIOS bootstrap templates, not a filename or identifying comment. */

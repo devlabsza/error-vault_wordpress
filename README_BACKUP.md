@@ -54,16 +54,18 @@ Temporary files are automatically deleted from your server after upload.
 
 ## File Locations
 
+Backup files live in a private folder, `errorvault-private-<random>/`, in the folder above WordPress (or in `wp-content/` if that isn't writable). The exact path is stored in the `errorvault_private_dir` option. Older versions used the public `wp-content/uploads/errorvault-backups/` folder; anything left there is deleted on the next backup.
+
 ### Temporary Files
 ```
-wp-content/uploads/errorvault-backups/tmp/
+<private folder>/tmp/
 ├── backup-{id}.sql    (deleted after upload)
 └── backup-{id}.zip    (deleted after upload)
 ```
 
 ### Logs
 ```
-wp-content/uploads/errorvault-backups/backup.log
+<private folder>/backup.log
 ```
 
 ## What Gets Backed Up
@@ -198,7 +200,7 @@ EV_Backup_Helpers::trigger_manual_poll();
 
 ### File Permissions
 - Temporary files use WordPress default permissions
-- Log files stored in uploads directory (protected by .htaccess)
+- Dumps, archives and logs kept in a private folder with a random name, outside the web root when possible
 - No executable files created
 
 ### Best Practices
@@ -283,7 +285,7 @@ EV_Cron::schedule_backup_poll();
 
 ### Debug Mode
 All operations are automatically logged to:
-- `wp-content/uploads/errorvault-backups/backup.log`
+- `backup.log` in the private folder (see File Locations)
 - PHP error_log
 
 ### Log Format
