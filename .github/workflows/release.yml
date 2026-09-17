@@ -4,13 +4,16 @@ on:
   release:
     types: [created]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Create properly named plugin folder
         run: |
@@ -27,11 +30,6 @@ jobs:
           zip -r error-vault-wordpress.zip errorvault-wordpress
 
       - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: /tmp/error-vault-wordpress.zip
-          asset_name: error-vault-wordpress.zip
-          asset_content_type: application/zip
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" /tmp/error-vault-wordpress.zip --clobber
