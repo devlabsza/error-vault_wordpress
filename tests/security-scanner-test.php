@@ -11,20 +11,23 @@ mkdir(WP_PLUGIN_DIR, 0700, true); mkdir(WP_CONTENT_DIR . '/uploads', 0700, true)
 $GLOBALS['ev_upload_base'] = WP_CONTENT_DIR . '/uploads';
 $GLOBALS['ev_remote_checksum'] = null;
 $GLOBALS['ev_cron'] = array();
+$GLOBALS['ev_options'] = array();
+$GLOBALS['ev_filters'] = array();
 function wp_normalize_path($v) { return str_replace('\\', '/', $v); }
 function wp_upload_dir($a = null, $b = false) { return array('basedir' => $GLOBALS['ev_upload_base']); }
+function get_theme_root() { return WP_CONTENT_DIR . '/themes'; }
 function get_transient($key) { return false; }
 function set_transient($key, $value, $ttl) { return true; }
 function wp_remote_get($url, $options) { return array('status' => null === $GLOBALS['ev_remote_checksum'] ? 503 : 200, 'body' => $GLOBALS['ev_remote_checksum']); }
 function wp_remote_retrieve_response_code($r) { return $r['status']; }
 function wp_remote_retrieve_body($r) { return $r['body']; }
 function is_wp_error($r) { return false; }
-function apply_filters($name, $value) { return $value; }
+function apply_filters($name, $value) { return isset($GLOBALS['ev_filters'][$name]) ? $GLOBALS['ev_filters'][$name]($value) : $value; }
 function wp_json_encode($v) { return json_encode($v); }
 function wp_list_pluck($rows, $key) { return array_column($rows, $key); }
 function number_format_i18n($v) { return number_format($v); }
 function _get_cron_array() { return $GLOBALS['ev_cron']; }
-function get_option($name, $default = false) { return $default; }
+function get_option($name, $default = false) { return array_key_exists($name, $GLOBALS['ev_options']) ? $GLOBALS['ev_options'][$name] : $default; }
 function get_role($name) { return null; }
 require __DIR__ . '/../includes/class-errorvault-security-scanner.php';
 $checks = 0;
@@ -220,5 +223,60 @@ PHP;
     put('wp-content/themes/big/functions.php', '<?php // theme');
     $s = scanner(); invoke($s, 'count_php_files', WP_CONTENT_DIR . '/themes/big', 3000);
     check(!prop($s, 'truncated'), 'Theme file-count limit is not a coverage gap');
+    // Excluded folders are skipped only where they're legitimate: the same names anywhere else don't hide PHP.
+    $shell = '<?php system($_POST["cmd"]);';
+    $quarantine = 'errorvault-quarantine-q1w2e3r4t5y6';
+    $undo = 'errorvault-restore-20260917000000-a1b2c3d4e5f6g7h8';
+    $GLOBALS['ev_options'] = array('errorvault_quarantine_dir' => WP_CONTENT_DIR . '/' . $quarantine, 'errorvault_last_restore' => array('work' => WP_CONTENT_DIR . '/' . $undo));
+    $skipped = array('updraft', 'ai1wm-backups', 'backups-dup-lite', 'upgrade-temp-backup', $quarantine);
+    foreach ($skipped as $name) { put("wp-content/$name/shell.php", $shell); }
+    put("wp-content/$undo/rollback/plugins/old/shell.php", $shell);
+    $elsewhere = array('wp-content/uploads/node_modules/shell.php', 'wp-content/uploads/2026/09/node_modules/pkg/shell.php', 'wp-content/uploads/.git/hooks/shell.php',
+        'wp-content/uploads/updraft/shell.php', 'wp-content/uploads/errorvault-backups/shell.php', 'wp-content/uploads/2026/09/errorvault-quarantine-x/shell.php',
+        'wp-content/errorvault-quarantine-unrecorded/shell.php', 'wp-content/node_modules/shell.php', 'wp-content/plugins/node_modules/shell.php');
+    foreach ($elsewhere as $rel) { put($rel, $shell); }
+    $s = scanner(); invoke($s, 'walk_content');
+    $hits = array_column(prop($s, 'signature_hits')['critical'], 'path');
+    foreach ($elsewhere as $rel) { check(in_array($rel, $hits, true), "Excluded folder name outside its location is inspected: $rel"); }
+    check(in_array('wp-content/uploads/2026/09/node_modules/pkg/shell.php', prop($s, 'php_in_uploads'), true), 'PHP in uploads/node_modules is reviewed as PHP in uploads');
+    foreach ($skipped as $name) {
+        check(!in_array("wp-content/$name/shell.php", $hits, true) && in_array("Excluded directory: wp-content/$name", prop($s, 'coverage_gaps'), true), "Legitimate backup or quarantine folder is still skipped and reported: $name");
+    }
+    check(!in_array("wp-content/$undo/rollback/plugins/old/shell.php", $hits, true), 'Recorded restore undo point is still skipped');
+    // A recorded quarantine or undo point only counts where Error-Vault creates one: directly in wp-content, under its own name.
+    $GLOBALS['ev_options'] = array('errorvault_quarantine_dir' => WP_CONTENT_DIR . '/uploads/2026/09/errorvault-quarantine-x', 'errorvault_last_restore' => array('work' => WP_CONTENT_DIR . '/uploads'));
+    $s = scanner(); invoke($s, 'walk_content');
+    $hits = array_column(prop($s, 'signature_hits')['critical'], 'path');
+    check(in_array('wp-content/uploads/2026/09/errorvault-quarantine-x/shell.php', $hits, true) && in_array('wp-content/uploads/node_modules/shell.php', $hits, true), 'Quarantine and restore records cannot exclude uploads folders');
+    $GLOBALS['ev_options'] = array();
+    // Inside plugins and themes, node_modules and .git are inspected after the other checks instead of skipped.
+    $deferred = array('wp-content/themes/dev/node_modules/pkg/lib/shell.php', 'wp-content/plugins/dev/.git/hooks/shell.php', 'wp-content/plugins/dev/node_modules/a/node_modules/b/shell.php');
+    foreach ($deferred as $rel) { put($rel, $shell); }
+    put('wp-content/themes/dev/node_modules/pkg/bin/tool.js', '#!/usr/bin/env node');
+    mkdir(WP_CONTENT_DIR . '/themes/dev/node_modules/.bin');
+    $bin = WP_CONTENT_DIR . '/themes/dev/node_modules/.bin/';
+    $linked = function_exists('symlink') && @symlink('../pkg/bin/tool.js', $bin . 'tool') && @symlink('../pkg/lib/shell.php', $bin . 'shell.php');
+    $s = scanner(); invoke($s, 'walk_content');
+    check(!array_intersect($deferred, array_column(prop($s, 'signature_hits')['critical'], 'path')), 'Plugin and theme dependency folders wait for the other checks');
+    invoke($s, 'walk_deferred');
+    $hits = array_column(prop($s, 'signature_hits')['critical'], 'path');
+    foreach ($deferred as $rel) { check(in_array($rel, $hits, true), "PHP in a plugin or theme dependency folder is inspected: $rel"); }
+    check(!preg_grep('~^(?:Excluded directory|Scan limit reached \w+ inspecting): .*/(?:node_modules|\.git)$~', prop($s, 'coverage_gaps')), 'Fully inspected dependency folders are not coverage gaps');
+    if ($linked) {
+        check(!in_array('Symlink not followed: wp-content/themes/dev/node_modules/.bin/tool', prop($s, 'coverage_gaps'), true), 'Command links in node_modules/.bin are not coverage gaps');
+        check(in_array('Symlink not followed: wp-content/themes/dev/node_modules/.bin/shell.php', prop($s, 'coverage_gaps'), true), 'A linked PHP file in node_modules is a coverage gap');
+    }
+    foreach (array('before' => ErrorVault_Security_Scanner::MAX_ENTRIES, 'while' => ErrorVault_Security_Scanner::MAX_ENTRIES - 1) as $when => $used) {
+        $s = scanner(); invoke($s, 'walk_content'); prop($s, 'entries', $used); invoke($s, 'walk_deferred');
+        check(!array_intersect($deferred, array_column(prop($s, 'signature_hits')['critical'], 'path')) && preg_grep("~^Scan limit reached $when inspecting: wp-content/~", prop($s, 'coverage_gaps')), "Dependency folders cut short by scan limits are coverage gaps ($when)");
+    }
+    // Filter entries stay compatible: a plain name is a folder directly in wp-content, deeper folders need a relative or absolute path.
+    $GLOBALS['ev_filters']['errorvault_security_scan_skip_dirs'] = function ($dirs) { return array_merge($dirs, array('my-cache', 'uploads/my-backups/', WP_CONTENT_DIR . '/uploads/2026/export')); };
+    $filtered = array('wp-content/my-cache' => true, 'wp-content/uploads/my-backups' => true, 'wp-content/uploads/2026/export' => true, 'wp-content/uploads/my-cache' => false, 'wp-content/uploads/2026/my-backups' => false);
+    foreach ($filtered as $dir => $skip) { put("$dir/shell.php", $shell); }
+    $s = scanner(); invoke($s, 'walk_content');
+    $hits = array_column(prop($s, 'signature_hits')['critical'], 'path');
+    foreach ($filtered as $dir => $skip) { check($skip !== in_array("$dir/shell.php", $hits, true), ($skip ? 'Filtered folder is skipped: ' : 'Filtered name or path does not match elsewhere: ') . $dir); }
+    $GLOBALS['ev_filters'] = array();
     echo "PASS: $checks security regression checks\n";
 } finally { cleanup($root); }

@@ -4,7 +4,7 @@ Tags: error logging, debugging, error monitoring, php errors, developer tools, s
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.10.0
+Stable tag: 1.10.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -73,6 +73,11 @@ Yes! In the settings, you can add exclude patterns. Any error message containing
 Log in to your Error-Vault portal, add your site, and the API token will be displayed in the site settings.
 
 == Changelog ==
+
+= 1.10.1 =
+* Security: only Error-Vault's own reported plugin file is exempt from the review for recently added plugins outside WordPress.org, preventing a lookalike plugin from avoiding review.
+* Security: backup, quarantine and dependency-folder scan exclusions now apply only in their legitimate locations; PHP hidden in lookalike folders is inspected.
+* Security: restored SQL is validated end to end; multi-table drops, data-copying statements, expressions and server-wide settings are refused.
 
 = 1.10.0 =
 * Security: database dumps, full-site backup archives (which include wp-config.php) and the backup log are now kept in a private folder, not the public uploads folder.
@@ -146,6 +151,9 @@ Log in to your Error-Vault portal, add your site, and the API token will be disp
 * Dashboard widget
 
 == Upgrade Notice ==
+
+= 1.10.1 =
+Important security hardening for malware scan exclusions, Error-Vault plugin identification and backup database imports. Update and run a fresh security scan.
 
 = 1.10.0 =
 Important security and restore fixes. Remote actions from the dashboard, including backup restore and undo, stay off until you turn them on in Settings > Error-Vault. Run a fresh security scan after updating.

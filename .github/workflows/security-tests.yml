@@ -11,4 +11,6 @@ jobs:
       - uses: actions/checkout@v4
       - run: php -l includes/class-errorvault-security-scanner.php
       - run: php -l includes/class-errorvault-security-evidence.php
+      - run: php -l includes/class-ev-backup-restorer.php
       - run: php tests/security-scanner-test.php
+      - run: php tests/backup-restorer-test.php

@@ -22,6 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 require_once __DIR__ . '/class-errorvault-security-evidence.php';
+require_once __DIR__ . '/class-ev-backup-helpers.php';
 
 class ErrorVault_Security_Scanner {
 
@@ -59,6 +60,7 @@ class ErrorVault_Security_Scanner {
     private $recognized_files = array();
     private $wp_cli_checksums = null;
     private $inspected_paths = array();
+    private $deferred_dirs = array();
 
     /* ------------------------------------------------------------------
      * Bootstrapping
@@ -561,6 +563,7 @@ class ErrorVault_Security_Scanner {
         $this->check_config();
         $this->check_database();
         $this->check_scheduled_tasks();
+        $this->walk_deferred();
         $this->build_file_findings();
         $this->limit_findings();
 
@@ -575,6 +578,8 @@ class ErrorVault_Security_Scanner {
             'wp_version' => $wp_version,
             'php_version' => PHP_VERSION,
             'plugin_version' => ERRORVAULT_VERSION,
+            // The portal skips its "not on WordPress.org" review only for this file: plugin names can be copied.
+            'self_plugin_file' => ERRORVAULT_PLUGIN_BASENAME,
             'multisite' => is_multisite(),
             'virtual_patch_active' => self::virtual_patch_active(),
             'admins' => $admins,
@@ -1221,32 +1226,102 @@ class ErrorVault_Security_Scanner {
 
     /* ------------------------- wp-content walk ----------------------- */
 
-    private function walk_content($base = null) {
-        $base = null === $base ? WP_CONTENT_DIR : $base;
-        $skip = apply_filters('errorvault_security_scan_skip_dirs', array(
-            'node_modules', '.git', 'upgrade-temp-backup', 'updraft', 'ai1wm-backups', 'backups-dup-lite', 'errorvault-backups',
+    /**
+     * Folders the content walk leaves out, each only where it is legitimate. Matching
+     * a folder name at any depth let PHP hide from the scan in any folder named like
+     * an excluded one, such as uploads/2026/09/node_modules.
+     *
+     * errorvault_security_scan_skip_dirs entries are paths relative to wp-content: a
+     * plain name ("updraft") is a folder directly in wp-content, deeper folders need a
+     * path ("uploads/my-backups"). Absolute paths work too. "node_modules" and ".git"
+     * aren't skipped: inside a plugin or theme folder they're walked last
+     * (walk_deferred()), anywhere else like any other folder.
+     */
+    private function walk_rules() {
+        $content = rtrim(wp_normalize_path(WP_CONTENT_DIR), '/');
+        $rules = array('skip' => array(), 'defer' => array(), 'code' => array(), 'undo' => '');
+
+        $entries = apply_filters('errorvault_security_scan_skip_dirs', array(
+            'node_modules', '.git', 'upgrade-temp-backup', 'updraft', 'ai1wm-backups', 'backups-dup-lite',
         ));
+        foreach ((array) $entries as $entry) {
+            $entry = is_string($entry) ? rtrim(wp_normalize_path($entry), '/') : '';
+            if ('node_modules' === $entry || '.git' === $entry) {
+                $rules['defer'][$entry] = true;
+            } elseif ('' !== $entry) {
+                $rules['skip'][preg_match('#^(?:/|[A-Za-z]:/)#', $entry) ? $entry : $content . '/' . $entry] = true;
+            }
+        }
+
+        $theme_roots = isset($GLOBALS['wp_theme_directories']) ? (array) $GLOBALS['wp_theme_directories'] : array();
+        foreach (array_merge(array(WP_PLUGIN_DIR, get_theme_root()), $theme_roots) as $root) {
+            $rules['code'][] = rtrim(wp_normalize_path($root), '/');
+        }
+
+        // Error-Vault's own folders: only the ones it recorded, and only where it creates
+        // them, directly in wp-content (its other location, above the web root, isn't walked).
+        $own = function ($path) use ($content) {
+            $path = is_string($path) ? rtrim(wp_normalize_path($path), '/') : '';
+            $name = basename($path);
+            return '' !== $name && $content . '/' . $name === $path && EV_Backup_Helpers::is_own_folder($name) ? $path : '';
+        };
+        // The quarantine only holds non-executable copies (.bin / .zip) of what was removed.
+        $quarantine = $own(get_option('errorvault_quarantine_dir'));
+        if ('' !== $quarantine) {
+            $rules['skip'][$quarantine] = true;
+        }
+        // The last restore's undo point: a saved copy of the site as it was before the
+        // restore. Re-flagging those files would only invite quarantining the undo point.
+        $restore = get_option('errorvault_last_restore');
+        $rules['undo'] = $own(is_array($restore) && isset($restore['work']) ? $restore['work'] : '');
+
+        return $rules;
+    }
+
+    /**
+     * node_modules and .git folders inside plugins and themes, after every other check,
+     * with the entries and time left. They can be huge and rarely hold PHP, but
+     * webshells get hidden in them, so they're inspected rather than skipped.
+     */
+    private function walk_deferred() {
+        foreach ($this->deferred_dirs as $dir) {
+            if ($this->entries >= self::MAX_ENTRIES || $this->out_of_time()) {
+                $this->coverage_gap('Scan limit reached before inspecting: ' . $this->relative($dir));
+            } else {
+                $this->walk_content($dir, true);
+            }
+        }
+    }
+
+    /** Walk wp-content, or $base. $deferred: $base is a folder queued for walk_deferred(). */
+    private function walk_content($base = null, $deferred = false) {
+        $base = null === $base ? WP_CONTENT_DIR : $base;
+        $rules = $this->walk_rules();
         $uploads = wp_upload_dir(null, false);
         $uploads_base = wp_normalize_path(isset($uploads['basedir']) ? $uploads['basedir'] : WP_CONTENT_DIR . '/uploads');
         $plugins_base = wp_normalize_path(WP_PLUGIN_DIR);
         $content_patterns = $this->iocs['content_dir_patterns'];
-        // The last restore's undo point: a saved copy of the site as it was before the
-        // restore. Re-flagging those files would only invite quarantining the undo point.
-        $restore = get_option('errorvault_last_restore');
-        $undo_dir = is_array($restore) && !empty($restore['work']) ? wp_normalize_path((string) $restore['work']) : '';
 
         try {
             $dir = new RecursiveDirectoryIterator($base, FilesystemIterator::SKIP_DOTS);
-            $filter = new RecursiveCallbackFilterIterator($dir, function ($current) use ($skip, $undo_dir) {
+            $filter = new RecursiveCallbackFilterIterator($dir, function ($current) use ($rules, $deferred) {
                 if (!$current->isDir()) {
                     return true;
                 }
-                if ('' !== $undo_dir && wp_normalize_path($current->getPathname()) === $undo_dir) { return false; }
-                if ($current->isLink() || !is_readable($current->getPathname())) { $this->coverage_gap('Directory unreadable or linked: ' . $this->relative($current->getPathname())); return false; }
-                $name = $current->getFilename();
-                $skipped = in_array($name, $skip, true) || 0 === strpos($name, 'errorvault-quarantine');
-                if ($skipped) { $this->coverage_gap('Excluded directory: ' . $this->relative($current->getPathname())); }
-                return !$skipped;
+                $path = wp_normalize_path($current->getPathname());
+                if ($path === $rules['undo']) { return false; }
+                if ($current->isLink() || !is_readable($current->getPathname())) { $this->coverage_gap('Directory unreadable or linked: ' . $this->relative($path)); return false; }
+                if (isset($rules['skip'][$path])) { $this->coverage_gap('Excluded directory: ' . $this->relative($path)); return false; }
+                if (!$deferred && isset($rules['defer'][$current->getFilename()])) {
+                    foreach ($rules['code'] as $root) {
+                        // Inside a plugin or theme folder, not directly in the plugins or themes directory.
+                        if (0 === strpos($path, $root . '/') && false !== strpos(substr($path, strlen($root) + 1), '/')) {
+                            $this->deferred_dirs[] = $path;
+                            return false;
+                        }
+                    }
+                }
+                return true;
             });
             $it = new RecursiveIteratorIterator($filter, RecursiveIteratorIterator::SELF_FIRST, RecursiveIteratorIterator::CATCH_GET_CHILD);
         } catch (Exception $e) {
@@ -1257,6 +1332,7 @@ class ErrorVault_Security_Scanner {
         foreach ($it as $file) {
             if (++$this->entries > self::MAX_ENTRIES || (0 === $this->entries % 200 && $this->out_of_time())) {
                 $this->truncated = true;
+                if ($deferred) { $this->coverage_gap('Scan limit reached while inspecting: ' . $this->relative($base)); }
                 break;
             }
 
@@ -1269,7 +1345,12 @@ class ErrorVault_Security_Scanner {
                 continue;
             }
 
-            if ($file->isLink()) { $this->coverage_gap('Symlink not followed: ' . $this->relative($path)); continue; }
+            // In node_modules / .git only a linked PHP file is a gap: npm links package commands
+            // into node_modules/.bin, and a link without a PHP name hides nothing this walk inspects.
+            if ($file->isLink()) {
+                if (!$deferred || self::php_filename($file->getFilename())) { $this->coverage_gap('Symlink not followed: ' . $this->relative($path)); }
+                continue;
+            }
 
             $name = $file->getFilename();
             $rel = $this->relative($path);

@@ -5,7 +5,9 @@
  * Designed so a failure part-way can't leave a half-restored site:
  *  1. Download the archive and verify its SHA-256, unzip it (unsafe paths refused).
  *  2. Import the database into temporary "evr_" tables. The live site is untouched:
- *     only this site's table data and session settings from the dump are run.
+ *     each statement is checked against the exact shapes mysqldump and the plugin's
+ *     exporter emit, so only this site's table data and session settings from the
+ *     dump are run (see plan_statement()); anything else is skipped.
  *  3. Maintenance mode on; swap wp-content folders (renames) and swap all tables
  *     in one atomic RENAME TABLE; the previous tables become "evo_" tables. If
  *     anything fails, every folder already swapped is put back.
@@ -508,17 +510,12 @@ class EV_Backup_Restorer {
 
         $tables = array();
         $statement = '';
-        $head = '/^(\s*(?:DROP TABLE IF EXISTS|DROP TABLE|CREATE TABLE(?: IF NOT EXISTS)?|INSERT(?: IGNORE)? INTO|REPLACE INTO|\/\*!\d+\s+ALTER TABLE|ALTER TABLE)\s+)`([^`]+)`/i';
-        // Apart from this site's table data, only session settings are run. Anything
-        // else in a dump (GTID and binary-log settings, views, routines, locks) could
-        // change the live database or server, so it is skipped.
-        $session_setting = '/^\s*(?:\/\*!\d+\s+)?SET\s+(?:NAMES\b|CHARACTER\s+SET\b|@[A-Za-z_]\w*\s*=|(?:SESSION\s+)?(?:FOREIGN_KEY_CHECKS|UNIQUE_CHECKS|SQL_MODE|SQL_NOTES|TIME_ZONE|CHARACTER_SET_CLIENT|CHARACTER_SET_RESULTS|COLLATION_CONNECTION)\s*=)/i';
 
         try {
             while (false !== ($line = fgets($handle))) {
                 if ('' === $statement) {
                     $trimmed = ltrim($line);
-                    if ('' === $trimmed || 0 === strpos($trimmed, '--') || 0 === strpos($trimmed, 'mysqldump:') || 0 === strpos($trimmed, 'Warning:')) {
+                    if ($this->is_noise_line($trimmed)) {
                         continue;
                     }
                     if (0 === stripos($trimmed, 'DELIMITER')) {
@@ -534,22 +531,27 @@ class EV_Backup_Restorer {
                 $query = $statement;
                 $statement = '';
 
-                if (preg_match($head, $query, $m)) {
-                    $table = $m[2];
-                    if (!EV_Backup_Helpers::is_site_table($table, $prefix, $foreign)) {
-                        continue; // another install's table in a shared database
-                    }
+                // Only the exact statement forms mysqldump (MySQL and MariaDB) and the
+                // plugin's own exporter emit for table data and session setup are run;
+                // anything else (GTID and binary-log settings, views, routines, locks,
+                // multi-table drops, INSERT ... SELECT, GLOBAL variables, ...) is skipped,
+                // so a crafted or tampered dump can't reach the live database or server.
+                $plan = $this->plan_statement($query, $prefix, $foreign);
+                if ('skip' === $plan['action']) {
+                    continue;
+                }
+                $query = $plan['query'];
+
+                if ('table' === $plan['action']) {
+                    $table = $plan['table'];
                     if (strlen(self::OLD_PREFIX . $table) > 64) {
                         throw new Exception('Table name too long to restore safely: ' . $table);
                     }
-                    $query = $m[1] . '`' . self::TMP_PREFIX . $table . '`' . substr($query, strlen($m[0]));
-                    if (false !== stripos($m[1], 'CREATE TABLE')) {
+                    if ($plan['is_create']) {
                         $query = $this->strip_foreign_keys($query);
                         $tables[$table] = true;
                         $this->imported[$table] = true;
                     }
-                } elseif (!preg_match($session_setting, $query)) {
-                    continue;
                 }
 
                 if ($placeholder) {
@@ -569,6 +571,382 @@ class EV_Backup_Restorer {
         }
 
         return array_keys($tables);
+    }
+
+    /**
+     * A line that begins no statement of its own while assembling the dump: a blank
+     * line, a "--" comment, a mysqldump progress/warning line, or a whole-line
+     * version-guard comment that opens with "/*!" (or MariaDB's "/*M!") and closes
+     * on the same line with no trailing ";" - such as MySQL's and MariaDB's "enable
+     * the sandbox mode" line, which would otherwise merge with the next statement.
+     */
+    private function is_noise_line($trimmed) {
+        return '' === $trimmed
+            || 0 === strpos($trimmed, '--')
+            || 0 === strpos($trimmed, 'mysqldump:')
+            || 0 === strpos($trimmed, 'Warning:')
+            || (bool) preg_match('#^/\*[!M].*\*/\s*$#', rtrim($trimmed));
+    }
+
+    private function plan_statement($query, $prefix, array $foreign) {
+        // A table keyword followed by the first backticked table name. The rest of
+        // the statement (the "tail") is then checked so only the safe shape of each
+        // keyword is accepted.
+        $head = '/^(\s*(?:DROP TABLE IF EXISTS|DROP TABLE|CREATE TABLE(?: IF NOT EXISTS)?|INSERT(?: IGNORE)? INTO|REPLACE INTO|\/\*!\d+\s+ALTER TABLE|ALTER TABLE)\s+)`([^`]+)`/i';
+        if (preg_match($head, $query, $m)) {
+            $table = $m[2];
+            if (!EV_Backup_Helpers::is_site_table($table, $prefix, $foreign)) {
+                return array('action' => 'skip'); // another install's table in a shared database
+            }
+            $keyword = $this->head_keyword($m[1]);
+            $tail = substr($query, strlen($m[0]));
+            if (!$this->table_tail_is_allowed($keyword, $tail)) {
+                // e.g. "DROP TABLE `a`, `b`", "CREATE TABLE `t` SELECT ...",
+                // "INSERT INTO `t` SELECT ...", "ALTER TABLE `t` RENAME TO ...".
+                return array('action' => 'skip');
+            }
+            return array(
+                'action' => 'table',
+                'query' => $m[1] . '`' . self::TMP_PREFIX . $table . '`' . $tail,
+                'table' => $table,
+                'is_create' => ('CREATE' === $keyword),
+            );
+        }
+
+        if ($this->is_allowed_set($query)) {
+            return array('action' => 'session', 'query' => $query);
+        }
+
+        return array('action' => 'skip');
+    }
+
+    /** Which table keyword the head of a matched statement began with. */
+    private function head_keyword($head) {
+        if (false !== stripos($head, 'CREATE TABLE')) { return 'CREATE'; }
+        if (false !== stripos($head, 'ALTER TABLE')) { return 'ALTER'; }
+        if (false !== stripos($head, 'REPLACE')) { return 'REPLACE'; }
+        if (false !== stripos($head, 'INSERT')) { return 'INSERT'; }
+        return 'DROP';
+    }
+
+    /**
+     * The part of a table statement after "KEYWORD `table`" must match the narrow
+     * shape mysqldump and the plugin exporter produce, and nothing wider:
+     *   DROP           only the terminator (a single table, never "`a`, `b`")
+     *   CREATE TABLE   a "(" column-definition list (never SELECT / LIKE / AS)
+     *   INSERT/REPLACE an optional "(`col`, ...)" list then VALUES (never SELECT)
+     *   ALTER TABLE    only DISABLE KEYS / ENABLE KEYS, optionally version-guarded
+     */
+    private function table_tail_is_allowed($keyword, $tail) {
+        switch ($keyword) {
+            case 'DROP':
+                return (bool) preg_match('/^\s*;\s*$/', $tail);
+            case 'CREATE':
+                return $this->create_tail_is_allowed($tail);
+            case 'INSERT':
+            case 'REPLACE':
+                return $this->insert_tail_is_allowed($tail);
+            case 'ALTER':
+                $core = preg_replace('/;\s*$/', '', trim($tail)); // trailing ";"
+                $core = preg_replace('#\s*\*/$#', '', $core);     // close of a /*! ... */ wrapper
+                return (bool) preg_match('/^(?:DISABLE|ENABLE)\s+KEYS$/i', trim((string) $core));
+        }
+        return false;
+    }
+
+    /**
+     * CREATE must contain one complete parenthesised definition and must not turn
+     * into CREATE ... AS SELECT / SELECT after it. Quoted comments and table
+     * comments are masked before checking the trailing table options.
+     */
+    private function create_tail_is_allowed($tail) {
+        $i = $this->skip_space($tail, 0);
+        if (!isset($tail[$i]) || '(' !== $tail[$i]) {
+            return false;
+        }
+        $end = $this->parenthesized_end($tail, $i);
+        if (false === $end) {
+            return false;
+        }
+        $options = substr($tail, $end);
+        if (!preg_match('/;\s*$/', $options)) {
+            return false;
+        }
+        $visible = $this->mask_sql_literals_and_comments($options);
+        return !preg_match('/\b(?:AS\s+)?SELECT\b|\bLIKE\b/i', $visible);
+    }
+
+    /**
+     * INSERT/REPLACE may have a backticked column list followed by VALUES, then
+     * one or more tuples made only of dump literals. Expressions, variables and
+     * subqueries are refused even when hidden inside a VALUES tuple.
+     */
+    private function insert_tail_is_allowed($tail) {
+        $len = strlen($tail);
+        $i = $this->skip_space($tail, 0);
+
+        if ($i < $len && '(' === $tail[$i]) {
+            $end = $this->parenthesized_end($tail, $i);
+            if (false === $end) {
+                return false;
+            }
+            $columns = substr($tail, $i + 1, $end - $i - 2);
+            if (!preg_match('/^\s*`(?:``|[^`])+`(?:\s*,\s*`(?:``|[^`])+`)*\s*$/', $columns)) {
+                return false;
+            }
+            $i = $this->skip_space($tail, $end);
+        }
+
+        if (!preg_match('/\GVALUES\b/i', $tail, $m, 0, $i)) {
+            return false;
+        }
+        $i += strlen($m[0]);
+
+        while (true) {
+            $i = $this->skip_space($tail, $i);
+            if ($i >= $len || '(' !== $tail[$i]) {
+                return false;
+            }
+            $i++;
+
+            while (true) {
+                $i = $this->skip_space($tail, $i);
+                $i = $this->dump_literal_end($tail, $i);
+                if (false === $i) {
+                    return false;
+                }
+                $i = $this->skip_space($tail, $i);
+                if ($i < $len && ',' === $tail[$i]) {
+                    $i++;
+                    continue;
+                }
+                if ($i >= $len || ')' !== $tail[$i]) {
+                    return false;
+                }
+                $i++;
+                break;
+            }
+
+            $i = $this->skip_space($tail, $i);
+            if ($i < $len && ',' === $tail[$i]) {
+                $i++;
+                continue;
+            }
+            return $i < $len && ';' === $tail[$i] && '' === trim(substr($tail, $i + 1));
+        }
+    }
+
+    /** End offset of one literal emitted by mysqldump or the PHP exporter. */
+    private function dump_literal_end($s, $i) {
+        $rest = substr($s, $i);
+        if (preg_match('/^(?:NULL|[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|0x[0-9a-f]+)\b/i', $rest, $m)) {
+            return $i + strlen($m[0]);
+        }
+        if (preg_match('/^(?:_binary\s*)?/i', $rest, $m)) {
+            $q = $i + strlen($m[0]);
+            if (isset($s[$q]) && ('\'' === $s[$q] || '"' === $s[$q])) {
+                return $this->skip_quoted($s, $q);
+            }
+        }
+        if (preg_match('/^[bBxX]/', $rest) && isset($s[$i + 1]) && '\'' === $s[$i + 1]) {
+            $end = $this->skip_quoted($s, $i + 1);
+            if (false === $end) {
+                return false;
+            }
+            $digits = substr($s, $i + 2, $end - $i - 3);
+            return preg_match('/^[bB]/', $rest) ? (preg_match('/^[01]*$/', $digits) ? $end : false) : (preg_match('/^[0-9a-f]*$/i', $digits) ? $end : false);
+        }
+        return false;
+    }
+
+    private function skip_space($s, $i) {
+        $len = strlen($s);
+        while ($i < $len && ctype_space($s[$i])) { $i++; }
+        return $i;
+    }
+
+    /** Offset after the matching closing parenthesis, or false. */
+    private function parenthesized_end($s, $i) {
+        $len = strlen($s);
+        $depth = 0;
+        for (; $i < $len; $i++) {
+            $c = $s[$i];
+            if ('\'' === $c || '"' === $c || '`' === $c) {
+                $end = $this->skip_quoted($s, $i);
+                if (false === $end) { return false; }
+                $i = $end - 1;
+            } elseif ('(' === $c) {
+                $depth++;
+            } elseif (')' === $c && 0 === --$depth) {
+                return $i + 1;
+            }
+        }
+        return false;
+    }
+
+    /** Hide quoted strings/identifiers and comments while preserving keywords outside them. */
+    private function mask_sql_literals_and_comments($s) {
+        $out = '';
+        $len = strlen($s);
+        for ($i = 0; $i < $len; $i++) {
+            if ('\'' === $s[$i] || '"' === $s[$i] || '`' === $s[$i]) {
+                $end = $this->skip_quoted($s, $i);
+                if (false === $end) { return $s; }
+                $out .= str_repeat(' ', $end - $i);
+                $i = $end - 1;
+            } elseif ('/' === $s[$i] && isset($s[$i + 1]) && '*' === $s[$i + 1]
+                && (!isset($s[$i + 2]) || ('!' !== $s[$i + 2] && 'M' !== $s[$i + 2]))) {
+                $end = strpos($s, '*/', $i + 2);
+                if (false === $end) { return $s; }
+                $end += 2;
+                $out .= str_repeat(' ', $end - $i);
+                $i = $end - 1;
+            } else {
+                $out .= $s[$i];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * A SET statement is allowed only when it is "SET NAMES ...", "SET CHARACTER
+     * SET ...", or a comma-separated list of assignments that each target a user
+     * variable (@name) or one of a fixed set of session variables — never a GLOBAL,
+     * @@GLOBAL or PERSIST variable. This puts the dump's own session setup back
+     * without letting it change the live server. Commas, keywords and quotes inside
+     * string values are ignored by splitting at the top level only.
+     */
+    private function is_allowed_set($query) {
+        $s = preg_replace('/;\s*$/', '', trim($query));
+        if (preg_match('#^/\*!\d+\s+(.*?)\s*\*/$#s', $s, $m)) {
+            $s = $m[1]; // unwrap a /*!NNNNN ... */ version guard
+        }
+        if (!preg_match('/^SET\s+(.*)$/is', $s, $m)) {
+            return false;
+        }
+        $args = trim($m[1]);
+
+        $charset = '(?:\'[^\']*\'|"[^"]*"|`[^`]*`|[A-Za-z0-9_]+)';
+        if (preg_match('/^NAMES\s+' . $charset . '(?:\s+COLLATE\s+' . $charset . ')?$/i', $args)
+            || preg_match('/^CHARACTER\s+SET\s+' . $charset . '$/i', $args)) {
+            return true;
+        }
+
+        foreach ($this->split_top_level($args) as $assignment) {
+            if (!$this->set_assignment_is_allowed($assignment)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Validate one "target = value" assignment from a SET. The target must be a
+     * user variable or an allowed session variable (optionally "SESSION"/"@@"-
+     * qualified, never GLOBAL / @@GLOBAL / PERSIST). The value must be a quoted
+     * string, a number, a user or session variable read, or a bare identifier
+     * (a charset/collation name).
+     */
+    private function set_assignment_is_allowed($assignment) {
+        $a = trim($assignment);
+        if ('' === $a) {
+            return false;
+        }
+
+        // The first top-level "=" splits target from value; a target never contains one.
+        $len = strlen($a);
+        $eq = -1;
+        for ($i = 0; $i < $len; $i++) {
+            $c = $a[$i];
+            if ('\'' === $c || '"' === $c || '`' === $c) {
+                $end = $this->skip_quoted($a, $i);
+                if (false === $end) { return false; }
+                $i = $end - 1;
+            } elseif ('=' === $c) {
+                $eq = $i;
+                break;
+            }
+        }
+        if ($eq < 0) {
+            return false;
+        }
+        $target = trim(substr($a, 0, $eq));
+        $value = trim(substr($a, $eq + 1));
+
+        $session_vars = 'FOREIGN_KEY_CHECKS|UNIQUE_CHECKS|SQL_MODE|SQL_NOTES|TIME_ZONE|CHARACTER_SET_CLIENT|CHARACTER_SET_RESULTS|COLLATION_CONNECTION';
+        $target_ok = preg_match('/^@[A-Za-z0-9_$]+$/', $target)
+            || preg_match('/^(?:SESSION\s+|@@(?:SESSION\.)?)?(?:' . $session_vars . ')$/i', $target);
+        if (!$target_ok) {
+            return false;
+        }
+
+        if ('' !== $value && ('\'' === $value[0] || '"' === $value[0])) {
+            // Exactly one complete quoted string, nothing trailing after the close.
+            $end = $this->skip_quoted($value, 0);
+            return false !== $end && $end === strlen($value);
+        }
+        return (bool) (
+            preg_match('/^[+-]?[0-9]+(?:\.[0-9]+)?$/', $value)     // number
+            || preg_match('/^@[A-Za-z0-9_$]+$/', $value)          // @user_var
+            || preg_match('/^@@[A-Za-z_][A-Za-z0-9_]*$/', $value) // @@session_read (no dot, so not @@GLOBAL.x)
+            || preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $value)   // bare charset/collation name
+        );
+    }
+
+    /**
+     * Split a SET argument list on its top-level commas only, so a comma inside a
+     * quoted string, backtick identifier or parentheses stays with its value.
+     *
+     * @return string[]
+     */
+    private function split_top_level($s) {
+        $parts = array();
+        $len = strlen($s);
+        $depth = 0;
+        $start = 0;
+        for ($i = 0; $i < $len; $i++) {
+            $c = $s[$i];
+            if ('\'' === $c || '"' === $c || '`' === $c) {
+                $end = $this->skip_quoted($s, $i);
+                if (false === $end) { return array(''); }
+                $i = $end - 1;
+            } elseif ('(' === $c) {
+                $depth++;
+            } elseif (')' === $c) {
+                if ($depth > 0) { $depth--; }
+            } elseif (',' === $c && 0 === $depth) {
+                $parts[] = substr($s, $start, $i - $start);
+                $start = $i + 1;
+            }
+        }
+        $parts[] = substr($s, $start);
+        return $parts;
+    }
+
+    /**
+     * Offset just past the string or backtick identifier that opens at $i. Doubled
+     * delimiters ('' "" ``) and, inside '...'/"..." only, backslash escapes are
+     * treated as part of the value, the way MySQL parses a dump. An unterminated
+     * quote returns false.
+     */
+    private function skip_quoted($s, $i) {
+        $q = $s[$i];
+        $len = strlen($s);
+        for ($i++; $i < $len; $i++) {
+            $c = $s[$i];
+            if ('\\' === $c && '`' !== $q) {
+                $i++; // skip the escaped character
+                continue;
+            }
+            if ($c === $q) {
+                if ($i + 1 < $len && $s[$i + 1] === $q) {
+                    $i++; // a doubled delimiter is an escaped delimiter, not the end
+                    continue;
+                }
+                return $i + 1;
+            }
+        }
+        return false;
     }
 
     /**
