@@ -3,7 +3,7 @@
  * Plugin Name: Error-Vault
  * Plugin URI: https://error-vault.com
  * Description: Send PHP errors to your Error-Vault dashboard for centralized error monitoring.
- * Version: 1.10.1
+ * Version: 1.10.2
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * Author: Error-Vault
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('ERRORVAULT_VERSION', '1.10.1');
+define('ERRORVAULT_VERSION', '1.10.2');
 define('ERRORVAULT_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('ERRORVAULT_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('ERRORVAULT_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -32,6 +32,7 @@ require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-api.php';
 require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-health-monitor.php';
 require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-security-scanner.php';
 require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-security-actions.php';
+require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-security-hardening.php';
 require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-errorvault-updater.php';
 require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-ev-cron.php';
 require_once ERRORVAULT_PLUGIN_DIR . 'includes/class-ev-backup-manager.php';
@@ -57,6 +58,9 @@ function errorvault_init() {
 
     // On-site security scanning + wp2shell virtual patch
     ErrorVault_Security_Scanner::init();
+
+    // Optional response headers selected under Security Hardening
+    ErrorVault_Security_Hardening::init();
 
     // Backup restore: admin approval notice + the cron hook that runs approved restores
     EV_Backup_Restorer::init_admin();
@@ -114,6 +118,12 @@ function errorvault_activate() {
         'exclude_patterns' => array(),
         'allow_remote_actions' => false,
         'disable_remote_actions' => false,
+        'security_header_nosniff' => false,
+        'security_header_referrer_policy' => false,
+        'security_header_frame_options' => false,
+        'security_header_permissions_policy' => false,
+        'security_permissions_policy' => ErrorVault_Security_Hardening::DEFAULT_PERMISSIONS_POLICY,
+        'security_remove_powered_by' => false,
     );
 
     if (!get_option('errorvault_settings')) {

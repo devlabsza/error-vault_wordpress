@@ -1,6 +1,6 @@
 # Regression suites
 
-Run `php tests/security-scanner-test.php` and `php tests/backup-restorer-test.php` (both are also run in CI on PHP 7.4, 8.3 and 8.5). No WordPress installation, database, Composer packages or network calls are needed.
+Run `php tests/security-scanner-test.php`, `php tests/backup-restorer-test.php` and `php tests/security-hardening-test.php` (all are also run in CI on PHP 7.4, 8.3 and 8.5). No WordPress installation, database, Composer packages or network calls are needed.
 
 ## Security scanner
 
@@ -17,6 +17,10 @@ These regression tests establish behavior for the covered cases, not a detection
 1.10.0 adds cases for sinks after a keyword or comment (`echo shell_exec(...)`), method dispatch on request input, compressed PHAR data, files too dense to tokenize within the memory limit, `version.php` statements and commented-out version lines, and the theme file-count limit.
 
 1.9.1 adds Wordfence loader and tampering cases, dotted AIOS names, guarded WP Hide JSON data, plain-data PHP suffixes, cron counts and uploads indicator classification. WP Hide fixtures follow the official 1.4.9.1 package generator; Wordfence follows the current official package generator. Redux PHP contents from the affected production site have not been inspected.
+
+## Security headers
+
+`security-hardening-test.php` verifies that every header is opt-in, existing headers win case-insensitively, `X-Powered-By` is removed only when selected, Permissions-Policy values cannot inject another header, and the plugin never emits HSTS or CSP without host/site-specific review.
 
 ## Database import gate (backup restore)
 

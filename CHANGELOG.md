@@ -2,6 +2,13 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.10.2] - 2026-09-17
+
+### Added
+- **Opt-in security headers.** Settings > Error-Vault now has individual controls for `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: SAMEORIGIN`, a configurable `Permissions-Policy`, and removal of `X-Powered-By` from PHP responses. Existing response headers are preserved, except for the explicitly selected removal.
+- Header values are stripped of control characters and bounded before use. HSTS remains a server/CDN decision, and CSP remains site-specific; the plugin does not enable either automatically.
+- The settings page explains that page caches, static files and host/CDN responses can bypass WordPress headers and should be checked with a fresh external scan.
+
 ## [1.10.1] - 2026-09-17
 
 ### Security

@@ -4,7 +4,7 @@ Tags: error logging, debugging, error monitoring, php errors, developer tools, s
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.10.1
+Stable tag: 1.10.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -24,6 +24,7 @@ Error-Vault is a centralized error monitoring solution for WordPress. Instead of
 * Exclude patterns to filter out known issues
 * Dashboard widget showing error statistics
 * Works with any hosting provider
+* Opt-in response security headers with per-header controls
 
 **How It Works:**
 
@@ -73,6 +74,10 @@ Yes! In the settings, you can add exclude patterns. Any error message containing
 Log in to your Error-Vault portal, add your site, and the API token will be displayed in the site settings.
 
 == Changelog ==
+
+= 1.10.2 =
+* Add opt-in controls for nosniff, Referrer-Policy, SAMEORIGIN, Permissions-Policy and removal of X-Powered-By from WordPress responses.
+* Preserve existing host/plugin headers and keep HSTS and CSP as explicit server/site-specific configuration.
 
 = 1.10.1 =
 * Security: only Error-Vault's own reported plugin file is exempt from the review for recently added plugins outside WordPress.org, preventing a lookalike plugin from avoiding review.
@@ -151,6 +156,9 @@ Log in to your Error-Vault portal, add your site, and the API token will be disp
 * Dashboard widget
 
 == Upgrade Notice ==
+
+= 1.10.2 =
+Adds opt-in response hardening under Settings > Error-Vault. Enable only the headers appropriate for the site, purge page caches, and verify with a fresh external scan.
 
 = 1.10.1 =
 Important security hardening for malware scan exclusions, Error-Vault plugin identification and backup database imports. Update and run a fresh security scan.
