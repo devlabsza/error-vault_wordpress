@@ -8,7 +8,7 @@ jobs:
         php: ['7.4', '8.3', '8.5']
     container: php:${{ matrix.php }}-cli
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: php -l includes/class-errorvault-security-scanner.php
       - run: php -l includes/class-errorvault-security-evidence.php
       - run: php -l includes/class-ev-backup-restorer.php
