@@ -2,6 +2,18 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.11.0] - 2026-11-12
+
+### Added
+- **Draft pages from the dashboard.** The Error-Vault dashboard can write a page from a site's AI visibility results: a question ChatGPT didn't mention the business for, or a recommendation to add content. Once the owner has reviewed and edited it there, they can send it to the site. The plugin saves it as a new **draft** page owned by the longest-standing administrator, ready to check and publish in WordPress.
+  - Off by default, under its own setting (**Allow draft pages from the Error-Vault dashboard** in Settings > Error-Vault), separate from remote cleanup actions. `ERRORVAULT_DISABLE_REMOTE_ACTIONS` turns it off too. A page sent while the setting is off is refused, and wp-admin says so.
+  - Always a new page with status `draft`: nothing is published, scheduled or made private, and no existing post or page is changed.
+  - Only headings (h2, h3), paragraphs, lists, bold, italics, quotes and links (http, https, mailto, tel or site-relative, with no other attributes) are kept. Scripts and similar elements are removed with their contents, and HTML comments (block markup) and registered shortcodes are removed.
+  - The meta description is stored on the page and filled into Yoast SEO or Rank Math when either is active.
+
+### Changed
+- A check-in that only saved draft pages no longer runs a full security scan afterwards.
+
 ## [1.10.2] - 2026-09-17
 
 ### Added

@@ -121,6 +121,10 @@ class ErrorVault_Admin {
         $sanitized['allow_remote_actions'] = $checkbox('allow_remote_actions', false);
         $sanitized['disable_remote_actions'] = !empty($input['disable_remote_actions']);
 
+        // Draft pages from the dashboard are opt-in on their own: an owner may want
+        // them without allowing remote cleanup, or the other way round.
+        $sanitized['allow_content_drafts'] = $checkbox('allow_content_drafts', false);
+
         return $sanitized;
     }
 
@@ -697,6 +701,22 @@ class ErrorVault_Admin {
                                             <?php _e('Allow actions requested from the Error-Vault dashboard', 'errorvault'); ?>
                                         </label>
                                         <p class="description"><?php _e('Off by default. Covers restoring backups and undoing a restore, quarantining flagged files (restorable), removing malicious plugins, reinstalling plugins/core from WordPress.org, deleting rogue admins and rotating salts. While it is off, these requests are refused and a notice appears here in wp-admin. Nothing sent by Error-Vault is ever run as code.', 'errorvault'); ?></p>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="font-weight: 600;"><?php _e('Draft Pages', 'errorvault'); ?></td>
+                                <td>
+                                    <?php if (defined('ERRORVAULT_DISABLE_REMOTE_ACTIONS') && ERRORVAULT_DISABLE_REMOTE_ACTIONS): ?>
+                                        <input type="hidden" name="errorvault_settings[allow_content_drafts]" value="<?php echo !empty($settings['allow_content_drafts']) ? '1' : ''; ?>">
+                                        <span style="color: #666;"><?php _e('Disabled by ERRORVAULT_DISABLE_REMOTE_ACTIONS in wp-config.php', 'errorvault'); ?></span>
+                                    <?php else: ?>
+                                        <label>
+                                            <input type="checkbox" name="errorvault_settings[allow_content_drafts]" value="1"
+                                                <?php checked(!empty($settings['allow_content_drafts'])); ?>>
+                                            <?php _e('Allow draft pages from the Error-Vault dashboard', 'errorvault'); ?>
+                                        </label>
+                                        <p class="description"><?php _e('Off by default. Pages written in the dashboard from your AI visibility results are saved here as new draft pages for you to review and publish. Nothing is published, and existing pages are never changed. Only headings, paragraphs, lists, emphasis, quotes and links are kept.', 'errorvault'); ?></p>
                                     <?php endif; ?>
                                 </td>
                             </tr>

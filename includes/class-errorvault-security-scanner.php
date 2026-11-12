@@ -380,6 +380,12 @@ class ErrorVault_Security_Scanner {
             }
             delete_transient(self::BACKOFF_KEY);
 
+            // Saving a draft page changes nothing a scan looks at.
+            $types = array_map(function ($action) { return isset($action['type']) ? (string) $action['type'] : ''; }, $data['actions']);
+            if (array() === array_diff($types, array(ErrorVault_Content_Drafts::TYPE))) {
+                return;
+            }
+
             // After a core update this request still runs the old core code,
             // so rescan from a fresh request a minute from now instead.
             if (in_array('update_core', $completed, true)) {

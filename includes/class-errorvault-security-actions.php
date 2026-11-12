@@ -13,6 +13,9 @@
  *  - delete_admin: content is reassigned; the last administrator can't be removed.
  *  - rotate_salts / logout_all: sign everyone out, including an attacker.
  *
+ *  - create_draft_page: saves a new draft page (ErrorVault_Content_Drafts),
+ *    under its own "Allow draft pages" setting rather than remote actions.
+ *
  * Nothing sent by the portal is ever written to disk or executed as code.
  * Remote actions (including backup restore and undo) stay off until a site owner
  * turns them on in Settings, Error-Vault; requests that arrive while they're off are
@@ -34,7 +37,7 @@ class ErrorVault_Security_Actions {
     const TYPES = array(
         'quarantine_path', 'restore_quarantine', 'remove_plugin', 'reinstall_plugin',
         'update_core', 'delete_admin', 'rotate_salts', 'logout_all', 'fix_active_plugins',
-        'restore_backup', 'undo_restore',
+        'restore_backup', 'undo_restore', 'create_draft_page',
     );
 
     /** Id of the action being run, for actions that finish later (approved restores). */
@@ -71,11 +74,26 @@ class ErrorVault_Security_Actions {
      * rather than leaving the owner to find a failed action in the portal.
      */
     public static function refused_notice() {
-        if (!current_user_can('manage_options') || self::enabled()) {
+        if (!current_user_can('manage_options')) {
             return;
         }
         $refused = get_option(self::REFUSED_OPTION);
         if (!is_array($refused) || time() - (int) $refused['time'] > 7 * DAY_IN_SECONDS) {
+            return;
+        }
+
+        $is_draft = ErrorVault_Content_Drafts::TYPE === $refused['type'];
+        if ($is_draft ? ErrorVault_Content_Drafts::enabled() : self::enabled()) {
+            return;
+        }
+        if ($is_draft && !(defined('ERRORVAULT_DISABLE_REMOTE_ACTIONS') && ERRORVAULT_DISABLE_REMOTE_ACTIONS)) {
+            echo '<div class="notice notice-warning"><p><strong>' . esc_html__('Error-Vault:', 'errorvault') . '</strong> ';
+            printf(
+                /* translators: %s: link to the settings page */
+                esc_html__('The Error-Vault dashboard sent a page to save as a draft, but draft pages are turned off, so nothing was saved. To allow it, turn on draft pages in %s, then send the page again from the dashboard.', 'errorvault'),
+                '<a href="' . esc_url(admin_url('options-general.php?page=errorvault')) . '">' . esc_html__('Settings, Error-Vault', 'errorvault') . '</a>'
+            );
+            echo '</p></div>';
             return;
         }
 
@@ -127,7 +145,12 @@ class ErrorVault_Security_Actions {
             $executed[$id] = array('status' => 'failed', 'message' => 'Interrupted before finishing.', 'data' => array(), 'reported' => false, 'time' => time());
             self::save_executed($executed);
 
-            if (!self::enabled()) {
+            if (ErrorVault_Content_Drafts::TYPE === $type && !ErrorVault_Content_Drafts::enabled()) {
+                $status = 'failed';
+                $message = 'Draft pages are turned off in the Error-Vault plugin settings on this site. Turn on "Allow draft pages" there, then send the page again.';
+                $data = array();
+                update_option(self::REFUSED_OPTION, array('type' => $type, 'time' => time()), false);
+            } elseif (ErrorVault_Content_Drafts::TYPE !== $type && !self::enabled()) {
                 $status = 'failed';
                 $message = 'Remote actions are turned off in the Error-Vault plugin settings on this site. Turn them on there, then run the action again.';
                 $data = array();
@@ -240,6 +263,8 @@ class ErrorVault_Security_Actions {
                 return (new EV_Backup_Restorer())->restore(isset($params['backup_id']) ? (int) $params['backup_id'] : 0, self::$current_action_id);
             case 'undo_restore':
                 return (new EV_Backup_Restorer())->undo(isset($params['restore_id']) ? (string) $params['restore_id'] : '');
+            case 'create_draft_page':
+                return ErrorVault_Content_Drafts::create($params);
         }
         throw new Exception('Unknown action type.');
     }

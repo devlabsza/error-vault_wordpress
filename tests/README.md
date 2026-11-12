@@ -1,6 +1,6 @@
 # Regression suites
 
-Run `php tests/security-scanner-test.php`, `php tests/backup-restorer-test.php` and `php tests/security-hardening-test.php` (all are also run in CI on PHP 7.4, 8.3 and 8.5). No WordPress installation, database, Composer packages or network calls are needed.
+Run `php tests/security-scanner-test.php`, `php tests/backup-restorer-test.php`, `php tests/security-hardening-test.php` and `php tests/content-drafts-test.php` (all are also run in CI on PHP 7.4, 8.3 and 8.5). No WordPress installation, database, Composer packages or network calls are needed.
 
 ## Security scanner
 
@@ -21,6 +21,12 @@ These regression tests establish behavior for the covered cases, not a detection
 ## Security headers
 
 `security-hardening-test.php` verifies that every header is opt-in, existing headers win case-insensitively, `X-Powered-By` is removed only when selected, Permissions-Policy values cannot inject another header, and the plugin never emits HSTS or CSP without host/site-specific review.
+
+## Draft pages
+
+`content-drafts-test.php` stubs the WordPress calls `ErrorVault_Content_Drafts` makes and records what it asks for. It verifies that a page is always saved as a new draft page owned by the longest-standing administrator, never published and never targeting an existing post. It also checks the HTML handed to `wp_kses`: only headings, paragraphs, lists, emphasis, quotes and `href` on links, limited to http, https, mailto and tel. Scripts are removed together with their text, comments (block markup) and registered shortcodes are removed, and `[placeholders]` stay. Through the real action queue, it checks that draft pages need their own setting, that this setting doesn't allow cleanup actions (nor remote actions draft pages), that a repeated action id saves nothing twice, and that `ERRORVAULT_DISABLE_REMOTE_ACTIONS` turns draft pages off too.
+
+`wp_kses` itself is stubbed here. During the 1.11.0 change the same allowlist was run once through WordPress 7.1.4's real kses with hostile input (encoded `javascript:` and `data:` links, event handlers, `style`, SVG, forms, iframes, block comments and a registered shortcode). All of it was removed or neutralised. That check is not part of the committed suite.
 
 ## Database import gate (backup restore)
 
