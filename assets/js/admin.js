@@ -183,7 +183,7 @@
             });
         });
 
-        // Trigger backup poll button
+        // Run security scan button
         $('#run-security-scan').on('click', function() {
             var $button = $(this);
             var $result = $('#security-scan-result');
@@ -195,15 +195,33 @@
                 action: 'errorvault_run_security_scan',
                 nonce: errorvaultAdmin.nonce
             }).done(function(response) {
-                if (response.success) {
+                // A firewall or challenge page, or PHP output before the JSON, isn't the plugin's answer.
+                if (!response || 'object' !== typeof response || 'string' !== typeof response.data) {
+                    $button.prop('disabled', false);
+                    $result.removeClass('success').addClass('error').text(errorvaultAdmin.strings.scanUnexpected);
+                } else if (response.success) {
                     $result.removeClass('error').addClass('success').text(response.data);
                 } else {
                     $button.prop('disabled', false);
                     $result.removeClass('success').addClass('error').text(response.data);
                 }
-            }).fail(function() {
+            }).fail(function(xhr) {
+                // Say why, so a failed start can be fixed rather than guessed at.
+                var s = errorvaultAdmin.strings, message = s.scanFailed;
+                var body = String(xhr.responseText || '').trim();
+                if (!xhr.status) {
+                    message = s.scanNoResponse;
+                } else if (403 === xhr.status) {
+                    // WordPress answers an expired nonce with "-1".
+                    message = '-1' === body ? s.scanSessionExpired : s.scanBlocked;
+                } else if (400 === xhr.status && '0' === body) {
+                    // ...and a signed-out visitor (no handler for them) with "0".
+                    message = s.scanLoggedOut;
+                } else if (xhr.status >= 400) {
+                    message = s.scanServerError.replace(/%(1\$)?s/, xhr.status);
+                }
                 $button.prop('disabled', false);
-                $result.removeClass('success').addClass('error').text(errorvaultAdmin.strings.scanFailed);
+                $result.removeClass('success').addClass('error').text(message);
             });
         });
 

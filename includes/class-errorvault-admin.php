@@ -172,6 +172,13 @@ class ErrorVault_Admin {
                 'logsCleared' => __('Logs cleared successfully', 'errorvault'),
                 'startingScan' => __('Starting security scan...', 'errorvault'),
                 'scanFailed' => __('Could not start the security scan', 'errorvault'),
+                'scanSessionExpired' => __('Could not start the security scan: this page has expired. Reload it and try again.', 'errorvault'),
+                'scanBlocked' => __('Could not start the security scan: the request was blocked (HTTP 403), possibly by a security plugin or firewall.', 'errorvault'),
+                'scanLoggedOut' => __('Could not start the security scan: you have been signed out. Log in again and try again.', 'errorvault'),
+                'scanUnexpected' => __('Could not start the security scan: the site sent an unexpected response, possibly from a security plugin or firewall.', 'errorvault'),
+                /* translators: %s: HTTP status code */
+                'scanServerError' => __('Could not start the security scan: the site returned an error (HTTP %s). Check the PHP error log.', 'errorvault'),
+                'scanNoResponse' => __('Could not start the security scan: no response from the site. Check your connection and try again.', 'errorvault'),
             ),
         ));
     }

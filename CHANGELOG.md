@@ -2,6 +2,18 @@
 
 All notable changes to ErrorVault WordPress Plugin will be documented in this file.
 
+## [1.11.1] - 2026-11-18
+
+### Fixed
+- **A requested scan was put off when a draft page arrived.** Since 1.11.0, a check-in that delivered only draft pages skipped the scan. That included a scan that was due or had been asked for from the Error-Vault dashboard, so it ran one check-in (about five minutes) later. It now runs in the same check-in.
+
+### Changed
+- **"Run Security Scan Now" says why a scan couldn't start.** Before, every failed request showed "Could not start the security scan". It now says whether the page had expired (reload it), the request was blocked (HTTP 403, often a security plugin or firewall), the site returned an error (with the HTTP status), or there was no response.
+- It also says when you've been signed out, and when the reply wasn't the plugin's (a firewall or challenge page) instead of spinning forever.
+- If the scan can't be queued, the button shows WordPress's reason instead of reporting success. A scan already queued is not queued twice, and one that has waited over two minutes is reported as WP-Cron not running.
+- When `DISABLE_WP_CRON` is set, the button says the scan starts at the server's next cron run, instead of "started".
+- When a scan or cleanup action is already running, a queued manual scan is skipped and the plugin logs why, instead of failing silently.
+
 ## [1.11.0] - 2026-11-12
 
 ### Added

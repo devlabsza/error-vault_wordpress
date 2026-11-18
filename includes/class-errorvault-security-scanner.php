@@ -380,20 +380,19 @@ class ErrorVault_Security_Scanner {
             }
             delete_transient(self::BACKOFF_KEY);
 
-            // Saving a draft page changes nothing a scan looks at.
+            // Saving a draft page changes nothing a scan looks at, so draft-only
+            // check-ins skip the rescan, but still run a scan that was due or asked for.
             $types = array_map(function ($action) { return isset($action['type']) ? (string) $action['type'] : ''; }, $data['actions']);
-            if (array() === array_diff($types, array(ErrorVault_Content_Drafts::TYPE))) {
+            if (array() !== array_diff($types, array(ErrorVault_Content_Drafts::TYPE))) {
+                // After a core update this request still runs the old core code,
+                // so rescan from a fresh request a minute from now instead.
+                if (in_array('update_core', $completed, true)) {
+                    wp_schedule_single_event(time() + 60, self::RUN_NOW_HOOK);
+                    return;
+                }
+                self::run_and_report($iocs, 'requested');
                 return;
             }
-
-            // After a core update this request still runs the old core code,
-            // so rescan from a fresh request a minute from now instead.
-            if (in_array('update_core', $completed, true)) {
-                wp_schedule_single_event(time() + 60, self::RUN_NOW_HOOK);
-                return;
-            }
-            self::run_and_report($iocs, 'requested');
-            return;
         }
 
         if (!empty($data['scan']) && !get_transient(self::BACKOFF_KEY)) {
@@ -417,7 +416,11 @@ class ErrorVault_Security_Scanner {
     }
 
     public static function run_manual() {
-        self::run_and_report(array(), 'manual');
+        $result = self::run_and_report(array(), 'manual');
+        if (is_wp_error($result) && 'errorvault_scan_locked' === $result->get_error_code()) {
+            // Another scan or a cleanup action started first; its results stand in for this one.
+            error_log('[ErrorVault Security] "Run Security Scan Now" skipped: ' . $result->get_error_message());
+        }
     }
 
     /**
@@ -438,7 +441,28 @@ class ErrorVault_Security_Scanner {
         }
 
         delete_transient(self::BACKOFF_KEY);
-        wp_schedule_single_event(time(), self::RUN_NOW_HOOK);
+        $queued = wp_next_scheduled(self::RUN_NOW_HOOK);
+        if ($queued && $queued < time() - 2 * MINUTE_IN_SECONDS) {
+            // A scan queued earlier never ran, so WP-Cron isn't running here.
+            wp_send_json_error(sprintf(
+                /* translators: %s: how long ago, e.g. "12 mins" */
+                __('A security scan was queued %s ago and hasn\'t started, so WP-Cron doesn\'t seem to be running on this site. Ask your host to check that wp-cron.php runs, or request a scan from the Error-Vault dashboard.', 'errorvault'),
+                human_time_diff($queued)
+            ));
+        }
+        if (!$queued) {
+            $scheduled = wp_schedule_single_event(time(), self::RUN_NOW_HOOK, array(), true);
+            if (is_wp_error($scheduled) || false === $scheduled) {
+                $reason = is_wp_error($scheduled) ? $scheduled->get_error_message() : __('WordPress refused to schedule it.', 'errorvault');
+                /* translators: %s: WordPress's reason */
+                wp_send_json_error(sprintf(__('Could not queue the security scan: %s', 'errorvault'), $reason));
+            }
+        }
+
+        // With WP-Cron off, the scan waits for the server's own cron job.
+        if (defined('DISABLE_WP_CRON') && DISABLE_WP_CRON) {
+            wp_send_json_success(__('Security scan queued. WP-Cron is turned off on this site, so it starts the next time the server runs wp-cron.php. Results then appear in Error-Vault.', 'errorvault'));
+        }
         spawn_cron();
 
         wp_send_json_success(__('Security scan started. Results appear in Error-Vault in a few minutes.', 'errorvault'));

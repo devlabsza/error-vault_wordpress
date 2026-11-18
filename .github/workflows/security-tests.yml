@@ -19,3 +19,4 @@ jobs:
       - run: php tests/backup-restorer-test.php
       - run: php tests/security-hardening-test.php
       - run: php tests/content-drafts-test.php
+      - run: php tests/scanner-poll-test.php

@@ -4,7 +4,7 @@ Tags: error logging, debugging, error monitoring, php errors, developer tools, s
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.11.0
+Stable tag: 1.11.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -74,6 +74,10 @@ Yes! In the settings, you can add exclude patterns. Any error message containing
 Log in to your Error-Vault portal, add your site, and the API token will be displayed in the site settings.
 
 == Changelog ==
+
+= 1.11.1 =
+* Fixed: a security scan requested from the Error-Vault dashboard was put off by five minutes when the same check-in also delivered a draft page.
+* "Run Security Scan Now" now says why a scan couldn't start (expired page, signed out, blocked request, server error, no response, WP-Cron not running), and says when WP-Cron is turned off so the scan waits for the server's cron job.
 
 = 1.11.0 =
 * Draft pages: pages written in the Error-Vault dashboard from AI visibility results can be saved on the site as new draft pages. Off by default; turn on "Allow draft pages" under Settings, Error-Vault. Nothing is published and existing pages are never changed.
